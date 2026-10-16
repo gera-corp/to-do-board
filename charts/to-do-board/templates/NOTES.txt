@@ -1,0 +1,16 @@
+Доска {{ include "to-do-board.fullname" . }} установлена в namespace {{ .Release.Namespace }}.
+{{- if .Values.ingress.enabled }}
+
+Адрес: {{ include "to-do-board.publicUrl" . }}
+{{- else }}
+
+Ingress выключен. Доступ через проброс порта:
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "to-do-board.fullname" . }} 8000:{{ .Values.service.port }}
+{{- end }}
+
+При первом входе создайте администратора.
+{{- if .Values.vault.enabled }}
+
+Секреты берутся из Vault: {{ .Values.vault.secretPath }}
+Ключи: {{ values .Values.vault.env | sortAlpha | join ", " }}
+{{- end }}

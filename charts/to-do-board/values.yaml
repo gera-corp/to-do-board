@@ -1,0 +1,125 @@
+# Значения по умолчанию для чарта to-do-board.
+
+image:
+  repository: ghcr.io/gera-corp/to-do-board
+  # Пусто — используется appVersion чарта.
+  tag: ""
+  # Если указан (sha256:...), образ берётся по дайджесту, а tag игнорируется.
+  digest: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+
+nameOverride: ""
+fullnameOverride: ""
+
+# Реплика всегда одна: SQLite не поддерживает несколько процессов-писателей
+# на разных узлах, поэтому replicaCount намеренно не настраивается.
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+podAnnotations: {}
+podLabels: {}
+
+# --- безопасность ---
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  fsGroup: 65532
+  fsGroupChangePolicy: OnRootMismatch
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  privileged: false
+  readOnlyRootFilesystem: true
+  runAsNonRoot: true
+  capabilities:
+    drop: ["ALL"]
+
+# --- настройки приложения ---
+config:
+  # Часовой пояс сервера: по нему считаются «сегодня» и время утренней сводки.
+  timezone: UTC
+  # Час утренней сводки в Telegram (0–23).
+  telegramDigestHour: 9
+  # Адрес доски для ссылок в сообщениях. Пусто — https://<ingress.host>.
+  publicUrl: ""
+  # WAL не работает на сетевых ФС (NFS). Для локальных дисков можно поставить WAL.
+  sqliteJournalMode: DELETE
+  # Отдавать cookie сессии только по HTTPS. Отключайте, только если доска без TLS.
+  cookieSecure: true
+
+# Дополнительные переменные окружения (список в формате Kubernetes).
+extraEnv: []
+
+# --- секреты из Vault через bank-vaults vault-secrets-webhook ---
+vault:
+  enabled: true
+  # Путь к секрету в KV v2 (с /data/ в пути).
+  secretPath: secret/data/to-do-board
+  # Переменная окружения -> ключ внутри секрета.
+  env:
+    TELEGRAM_BOT_TOKEN: TELEGRAM_BOT_TOKEN
+  # Пустые значения — используются настройки по умолчанию самого webhook.
+  addr: ""
+  role: ""
+  # Путь метода аутентификации kubernetes в Vault.
+  authPath: ""
+  skipVerify: ""
+  # Перезапускать под при изменении секрета (нужен vault-secrets-reloader).
+  reloadOnSecretChange: true
+  # Любые другие аннотации vault.security.banzaicloud.io/*.
+  annotations: {}
+
+# --- сеть ---
+service:
+  type: ClusterIP
+  port: 80
+
+ingress:
+  enabled: true
+  className: traefik
+  # Домен, по которому будет доступна доска. Обязателен, если ingress включён.
+  host: ""
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-cloud-production
+  tls:
+    enabled: true
+    # Пусто — <fullname>-tls (сертификат выпустит cert-manager).
+    secretName: ""
+
+networkPolicy:
+  enabled: true
+  # Namespace'ы, из которых разрешён входящий трафик (ingress controller).
+  ingressNamespaces:
+    - traefik
+
+# --- хранение данных ---
+persistence:
+  enabled: true
+  # Пусто — StorageClass по умолчанию.
+  storageClass: ""
+  accessModes:
+    - ReadWriteOnce
+  size: 1Gi
+  # Использовать уже существующий PVC вместо создания нового.
+  existingClaim: ""
+  # PVC не удаляется при helm uninstall, чтобы не потерять базу.
+  keepOnUninstall: true
+
+resources:
+  requests:
+    cpu: 20m
+    memory: 96Mi
+  limits:
+    memory: 256Mi
+
+nodeSelector: {}
+tolerations: []
+affinity: {}

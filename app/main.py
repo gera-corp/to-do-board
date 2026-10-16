@@ -1,0 +1,708 @@
+import json
+import os
+import sqlite3
+from contextlib import asynccontextmanager
+from dataclasses import dataclass
+from datetime import date, datetime, timedelta, timezone
+from html import escape
+from pathlib import Path
+from typing import Literal, Optional
+
+from fastapi import Depends, FastAPI, HTTPException, Request, Response
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, Field, field_validator
+
+from . import db
+from .config import load_env_file
+from .recurrence import next_due
+from .security import hash_password, new_token, verify_password
+from .telegram import NullNotifier, TelegramBot, short_date
+
+STATIC_DIR = Path(__file__).parent / "static"
+SESSION_COOKIE = "session"
+SESSION_DAYS = 90
+
+Status = Literal["todo", "in_progress", "review", "done"]
+Priority = Literal["low", "normal", "high"]
+Recurrence = Literal["none", "daily", "weekly", "monthly"]
+Color = Field(default="#2F5BD3", pattern=r"^#[0-9A-Fa-f]{6}$")
+Points = Field(default=1, ge=0, le=100)
+
+# Поля задачи, изменения которых попадают в историю как «edited».
+EDITABLE_FIELDS = ("title", "description", "priority", "category", "due_date", "recurrence", "points")
+
+
+# ---------- схемы ----------
+
+class UserCreate(BaseModel):
+    username: str = Field(min_length=1, max_length=32, pattern=r"^[\w.-]+$")
+    display_name: str = Field(min_length=1, max_length=64)
+    password: str = Field(min_length=4, max_length=128)
+    color: str = Color
+    is_admin: bool = False
+
+
+class UserUpdate(BaseModel):
+    display_name: Optional[str] = Field(default=None, min_length=1, max_length=64)
+    password: Optional[str] = Field(default=None, min_length=4, max_length=128)
+    color: Optional[str] = Field(default=None, pattern=r"^#[0-9A-Fa-f]{6}$")
+    is_admin: Optional[bool] = None
+
+
+class LoginIn(BaseModel):
+    username: str
+    password: str
+
+
+class TaskCreate(BaseModel):
+    title: str = Field(min_length=1, max_length=200)
+    description: str = Field(default="", max_length=5000)
+    status: Status = "todo"
+    priority: Priority = "normal"
+    category: str = Field(default="", max_length=40)
+    assignee_id: Optional[int] = None
+    due_date: Optional[date] = None
+    recurrence: Recurrence = "none"
+    points: int = Points
+    checklist: list[str] = Field(default_factory=list, max_length=100)
+
+    @field_validator("checklist")
+    @classmethod
+    def clean_checklist(cls, items: list[str]) -> list[str]:
+        return [i.strip()[:200] for i in items if i.strip()]
+
+
+class TaskUpdate(BaseModel):
+    title: Optional[str] = Field(default=None, min_length=1, max_length=200)
+    description: Optional[str] = Field(default=None, max_length=5000)
+    status: Optional[Status] = None
+    priority: Optional[Priority] = None
+    category: Optional[str] = Field(default=None, max_length=40)
+    assignee_id: Optional[int] = None
+    due_date: Optional[date] = None
+    recurrence: Optional[Recurrence] = None
+    points: Optional[int] = Field(default=None, ge=0, le=100)
+
+
+class MoveIn(BaseModel):
+    status: Status
+    index: int = Field(ge=0)
+
+
+class TextIn(BaseModel):
+    text: str = Field(max_length=2000)
+
+    @field_validator("text")
+    @classmethod
+    def not_blank(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("пустой текст")
+        return v.strip()
+
+
+class ChecklistUpdate(BaseModel):
+    text: Optional[str] = Field(default=None, min_length=1, max_length=200)
+    done: Optional[bool] = None
+
+
+# ---------- вспомогательное ----------
+
+def now_iso() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def plural(n: int, one: str, few: str, many: str) -> str:
+    n = abs(n) % 100
+    if 11 <= n <= 14:
+        return many
+    return {1: one, 2: few, 3: few, 4: few}.get(n % 10, many)
+
+
+def user_out(row: sqlite3.Row) -> dict:
+    return {
+        "id": row["id"],
+        "username": row["username"],
+        "display_name": row["display_name"],
+        "color": row["color"],
+        "is_admin": bool(row["is_admin"]),
+        "telegram_linked": row["telegram_chat_id"] is not None,
+    }
+
+
+def item_out(row: sqlite3.Row) -> dict:
+    return {"id": row["id"], "task_id": row["task_id"], "text": row["text"], "done": bool(row["done"])}
+
+
+def event_out(row: sqlite3.Row) -> dict:
+    return {
+        "id": row["id"], "task_id": row["task_id"], "user_id": row["user_id"], "kind": row["kind"],
+        "payload": json.loads(row["payload"]), "created_at": row["created_at"],
+    }
+
+
+def tasks_out(conn: sqlite3.Connection, rows: list[sqlite3.Row]) -> list[dict]:
+    tasks = [{k: r[k] for k in r.keys()} for r in rows]
+    if not tasks:
+        return tasks
+    by_id = {t["id"]: t for t in tasks}
+    for t in tasks:
+        t["checklist"] = []
+    marks = ",".join("?" * len(by_id))
+    items = conn.execute(
+        f"SELECT * FROM checklist_items WHERE task_id IN ({marks}) ORDER BY position, id", tuple(by_id)
+    ).fetchall()
+    for i in items:
+        by_id[i["task_id"]]["checklist"].append(item_out(i))
+    return tasks
+
+
+def get_task_row(conn: sqlite3.Connection, task_id: int) -> sqlite3.Row:
+    row = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
+    if row is None:
+        raise HTTPException(404, "Задача не найдена")
+    return row
+
+
+def task_full(conn: sqlite3.Connection, task_id: int) -> dict:
+    return tasks_out(conn, [get_task_row(conn, task_id)])[0]
+
+
+def ensure_user_exists(conn: sqlite3.Connection, user_id: Optional[int]) -> None:
+    if user_id is not None and conn.execute(
+        "SELECT 1 FROM users WHERE id = ?", (user_id,)
+    ).fetchone() is None:
+        raise HTTPException(400, "Такого пользователя нет")
+
+
+def column_ids(conn: sqlite3.Connection, status: str, exclude: int) -> list[int]:
+    rows = conn.execute(
+        "SELECT id FROM tasks WHERE status = ? AND id != ? ORDER BY position, id",
+        (status, exclude),
+    ).fetchall()
+    return [r["id"] for r in rows]
+
+
+def write_order(conn: sqlite3.Connection, ids: list[int]) -> None:
+    conn.executemany(
+        "UPDATE tasks SET position = ? WHERE id = ?",
+        [(pos, tid) for pos, tid in enumerate(ids)],
+    )
+
+
+def next_position(conn: sqlite3.Connection, table: str, column: str, value) -> int:
+    return conn.execute(
+        f"SELECT COALESCE(MAX(position), -1) + 1 FROM {table} WHERE {column} = ?", (value,)
+    ).fetchone()[0]
+
+
+def add_checklist(conn: sqlite3.Connection, task_id: int, texts: list[str]) -> None:
+    start = next_position(conn, "checklist_items", "task_id", task_id)
+    conn.executemany(
+        "INSERT INTO checklist_items (task_id, text, position) VALUES (?, ?, ?)",
+        [(task_id, text, start + i) for i, text in enumerate(texts)],
+    )
+
+
+@dataclass
+class Ctx:
+    """Всё, что нужно действию над доской: соединение, кто действует и куда слать уведомления."""
+
+    conn: sqlite3.Connection
+    user: sqlite3.Row
+    notifier: object
+
+    @property
+    def actor(self) -> str:
+        return escape(self.user["display_name"])
+
+    def log(self, task_id: int, kind: str, **payload) -> int:
+        cur = self.conn.execute(
+            "INSERT INTO task_events (task_id, user_id, kind, payload, created_at) VALUES (?, ?, ?, ?, ?)",
+            (task_id, self.user["id"], kind, json.dumps(payload, ensure_ascii=False), now_iso()),
+        )
+        return cur.lastrowid
+
+    def notify(self, user_ids, text: str) -> None:
+        """Шлёт сообщение указанным людям, кроме того, кто сам совершил действие."""
+        ids = {u for u in user_ids if u is not None and u != self.user["id"]}
+        if not ids or not self.notifier.enabled:
+            return
+        marks = ",".join("?" * len(ids))
+        rows = self.conn.execute(
+            f"SELECT telegram_chat_id FROM users WHERE id IN ({marks}) AND telegram_chat_id IS NOT NULL",
+            tuple(ids),
+        ).fetchall()
+        for r in rows:
+            self.notifier.send(r["telegram_chat_id"], text)
+
+
+def quoted(task) -> str:
+    return f"«{escape(task['title'])}»"
+
+
+def notify_assigned(ctx: Ctx, task) -> None:
+    text = f"📌 {ctx.actor} поручает вам: {quoted(task)}"
+    if task["due_date"]:
+        text += f"\nСрок: {short_date(task['due_date'])}"
+    ctx.notify([task["assignee_id"]], text)
+
+
+def change_status(ctx: Ctx, task_id: int, old: str, new: str) -> None:
+    """Последствия смены колонки: история, время выполнения, уведомления и следующий повтор."""
+    if new == old:
+        return
+    conn = ctx.conn
+    ctx.log(task_id, "status", **{"from": old, "to": new})
+    task = get_task_row(conn, task_id)
+
+    if new != "done":
+        conn.execute("UPDATE tasks SET completed_at = NULL WHERE id = ?", (task_id,))
+        if new == "review":
+            ctx.notify([task["creator_id"]], f"👀 {ctx.actor} просит проверить: {quoted(task)}")
+        return
+
+    conn.execute("UPDATE tasks SET completed_at = ? WHERE id = ?", (now_iso(), task_id))
+    text = f"✅ Сделано: {quoted(task)}"
+    if task["assignee_id"] and task["points"]:
+        pts = task["points"]
+        text += f", +{pts} {plural(pts, 'очко', 'очка', 'очков')}"
+    ctx.notify([task["creator_id"], task["assignee_id"]], f"{text}\nОтметил(а): {ctx.actor}")
+
+    if task["recurrence"] != "none":
+        spawn_next(ctx, task)
+
+
+def spawn_next(ctx: Ctx, task: sqlite3.Row) -> None:
+    conn = ctx.conn
+    today = date.today()
+    base = date.fromisoformat(task["due_date"]) if task["due_date"] else today
+    due = next_due(base, task["recurrence"])
+    while due <= today:
+        due = next_due(due, task["recurrence"])
+
+    # Повтор переезжает на новую копию, чтобы повторное «Готово» не плодило дубли.
+    conn.execute("UPDATE tasks SET recurrence = 'none' WHERE id = ?", (task["id"],))
+    cur = conn.execute(
+        """INSERT INTO tasks (title, description, status, priority, category, assignee_id,
+                              creator_id, due_date, recurrence, points, position)
+           VALUES (?, ?, 'todo', ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (task["title"], task["description"], task["priority"], task["category"],
+         task["assignee_id"], task["creator_id"], due.isoformat(), task["recurrence"],
+         task["points"], next_position(conn, "tasks", "status", "todo")),
+    )
+    items = conn.execute(
+        "SELECT text FROM checklist_items WHERE task_id = ? ORDER BY position, id", (task["id"],)
+    ).fetchall()
+    add_checklist(conn, cur.lastrowid, [i["text"] for i in items])
+    ctx.log(cur.lastrowid, "created", recurring_from=task["id"])
+
+
+def period_start(period: str) -> str:
+    """Начало недели или месяца по местному времени сервера, в UTC (как хранится completed_at)."""
+    now = datetime.now().astimezone()
+    if period == "all":
+        return ""
+    midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    start = midnight - timedelta(days=now.weekday()) if period == "week" else midnight.replace(day=1)
+    return start.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def make_notifier():
+    token = os.environ.get("TELEGRAM_BOT_TOKEN")
+    if not token:
+        return NullNotifier()
+    return TelegramBot(
+        token,
+        digest_hour=int(os.environ.get("TELEGRAM_DIGEST_HOUR") or 9),
+        public_url=os.environ.get("TODO_PUBLIC_URL"),
+    )
+
+
+# ---------- приложение ----------
+
+def create_app(db_path: Optional[str] = None, notifier=None) -> FastAPI:
+    load_env_file()
+    db_path = db_path or os.environ.get("TODO_DB") or str(Path("data") / "tasks.db")
+    notifier = notifier or make_notifier()
+    # За HTTPS-ingress cookie сессии должна уходить только по защищённому соединению.
+    cookie_secure = os.environ.get("TODO_COOKIE_SECURE", "").lower() in ("1", "true", "yes")
+    db.init_db(db_path, journal_mode=os.environ.get("TODO_SQLITE_JOURNAL_MODE") or "WAL")
+
+    @asynccontextmanager
+    async def lifespan(_: FastAPI):
+        notifier.start(db_path)
+        yield
+        notifier.stop()
+
+    app = FastAPI(title="Домашний канбан", lifespan=lifespan)
+
+    def get_conn():
+        conn = db.connect(db_path)
+        try:
+            yield conn
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+    # scope="function": коммит происходит до отправки ответа, иначе следующий запрос
+    # клиента может не увидеть только что записанные данные (например, сессию после входа).
+    Conn = Depends(get_conn, scope="function")
+
+    def current_user(request: Request, conn: sqlite3.Connection = Conn) -> sqlite3.Row:
+        token = request.cookies.get(SESSION_COOKIE)
+        if token:
+            row = conn.execute(
+                """SELECT u.* FROM sessions s JOIN users u ON u.id = s.user_id
+                   WHERE s.token = ? AND s.expires_at > ?""",
+                (token, now_iso()),
+            ).fetchone()
+            if row:
+                return row
+        raise HTTPException(401, "Нужно войти")
+
+    def admin_user(user: sqlite3.Row = Depends(current_user)) -> sqlite3.Row:
+        if not user["is_admin"]:
+            raise HTTPException(403, "Это может сделать только администратор")
+        return user
+
+    def get_ctx(user: sqlite3.Row = Depends(current_user), conn: sqlite3.Connection = Conn) -> Ctx:
+        return Ctx(conn, user, notifier)
+
+    def start_session(conn: sqlite3.Connection, response: Response, user_id: int) -> None:
+        token = new_token()
+        expires = datetime.now(timezone.utc) + timedelta(days=SESSION_DAYS)
+        conn.execute(
+            "INSERT INTO sessions (token, user_id, expires_at) VALUES (?, ?, ?)",
+            (token, user_id, expires.strftime("%Y-%m-%d %H:%M:%S")),
+        )
+        response.set_cookie(
+            SESSION_COOKIE, token, max_age=SESSION_DAYS * 86400, httponly=True, samesite="lax",
+            secure=cookie_secure,
+        )
+
+    def insert_user(conn: sqlite3.Connection, data: UserCreate, is_admin: bool) -> sqlite3.Row:
+        try:
+            cur = conn.execute(
+                """INSERT INTO users (username, display_name, password_hash, color, is_admin)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (data.username, data.display_name, hash_password(data.password),
+                 data.color, int(is_admin)),
+            )
+        except sqlite3.IntegrityError:
+            raise HTTPException(409, "Такой логин уже занят")
+        return conn.execute("SELECT * FROM users WHERE id = ?", (cur.lastrowid,)).fetchone()
+
+    # --- первичная настройка и вход ---
+
+    @app.get("/api/health")
+    def health(conn: sqlite3.Connection = Conn):
+        conn.execute("SELECT 1").fetchone()
+        return {"status": "ok"}
+
+    @app.get("/api/setup")
+    def setup_status(conn: sqlite3.Connection = Conn):
+        count = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+        return {"needs_setup": count == 0}
+
+    @app.post("/api/setup", status_code=201)
+    def setup(data: UserCreate, response: Response, conn: sqlite3.Connection = Conn):
+        if conn.execute("SELECT COUNT(*) FROM users").fetchone()[0] > 0:
+            raise HTTPException(409, "Первый пользователь уже создан")
+        user = insert_user(conn, data, is_admin=True)
+        start_session(conn, response, user["id"])
+        return user_out(user)
+
+    @app.post("/api/login")
+    def login(data: LoginIn, response: Response, conn: sqlite3.Connection = Conn):
+        user = conn.execute(
+            "SELECT * FROM users WHERE username = ?", (data.username.strip(),)
+        ).fetchone()
+        if user is None or not verify_password(data.password, user["password_hash"]):
+            raise HTTPException(401, "Неверный логин или пароль")
+        conn.execute("DELETE FROM sessions WHERE expires_at <= ?", (now_iso(),))
+        start_session(conn, response, user["id"])
+        return user_out(user)
+
+    @app.post("/api/logout", status_code=204)
+    def logout(request: Request, response: Response, conn: sqlite3.Connection = Conn):
+        token = request.cookies.get(SESSION_COOKIE)
+        if token:
+            conn.execute("DELETE FROM sessions WHERE token = ?", (token,))
+        response.delete_cookie(SESSION_COOKIE)
+
+    @app.get("/api/me")
+    def me(user: sqlite3.Row = Depends(current_user)):
+        return user_out(user)
+
+    @app.get("/api/config")
+    def config(_: sqlite3.Row = Depends(current_user)):
+        return {"telegram": notifier.enabled, "bot_username": notifier.bot_username}
+
+    # --- Telegram ---
+
+    @app.post("/api/me/telegram")
+    def telegram_link(ctx: Ctx = Depends(get_ctx)):
+        if not notifier.enabled or not notifier.bot_username:
+            raise HTTPException(400, "Telegram-бот не настроен или ещё не подключился")
+        code = new_token()[:32]
+        ctx.conn.execute("UPDATE users SET telegram_link_code = ? WHERE id = ?", (code, ctx.user["id"]))
+        return {"url": f"https://t.me/{notifier.bot_username}?start={code}"}
+
+    @app.delete("/api/me/telegram", status_code=204)
+    def telegram_unlink(ctx: Ctx = Depends(get_ctx)):
+        ctx.conn.execute(
+            "UPDATE users SET telegram_chat_id = NULL, telegram_link_code = NULL WHERE id = ?",
+            (ctx.user["id"],),
+        )
+
+    # --- пользователи ---
+
+    @app.get("/api/users")
+    def list_users(_: sqlite3.Row = Depends(current_user), conn: sqlite3.Connection = Conn):
+        rows = conn.execute("SELECT * FROM users ORDER BY display_name COLLATE NOCASE").fetchall()
+        return [user_out(r) for r in rows]
+
+    @app.post("/api/users", status_code=201)
+    def create_user(data: UserCreate, _: sqlite3.Row = Depends(admin_user),
+                    conn: sqlite3.Connection = Conn):
+        return user_out(insert_user(conn, data, is_admin=data.is_admin))
+
+    @app.patch("/api/users/{user_id}")
+    def update_user(user_id: int, data: UserUpdate, user: sqlite3.Row = Depends(current_user),
+                    conn: sqlite3.Connection = Conn):
+        if user_id != user["id"] and not user["is_admin"]:
+            raise HTTPException(403, "Можно менять только свой профиль")
+        target = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+        if target is None:
+            raise HTTPException(404, "Пользователь не найден")
+        changes = data.model_dump(exclude_unset=True, exclude_none=True)
+        if "is_admin" in changes:
+            if not user["is_admin"]:
+                raise HTTPException(403, "Права администратора выдаёт администратор")
+            if user_id == user["id"] and not changes["is_admin"]:
+                raise HTTPException(400, "Нельзя снять права администратора с себя")
+            changes["is_admin"] = int(changes["is_admin"])
+        if "password" in changes:
+            changes["password_hash"] = hash_password(changes.pop("password"))
+        if changes:
+            cols = ", ".join(f"{k} = ?" for k in changes)
+            conn.execute(f"UPDATE users SET {cols} WHERE id = ?", (*changes.values(), user_id))
+        return user_out(conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone())
+
+    @app.delete("/api/users/{user_id}", status_code=204)
+    def delete_user(user_id: int, user: sqlite3.Row = Depends(admin_user),
+                    conn: sqlite3.Connection = Conn):
+        if user_id == user["id"]:
+            raise HTTPException(400, "Нельзя удалить самого себя")
+        if conn.execute("DELETE FROM users WHERE id = ?", (user_id,)).rowcount == 0:
+            raise HTTPException(404, "Пользователь не найден")
+
+    # --- задачи ---
+
+    @app.get("/api/tasks")
+    def list_tasks(assignee_id: Optional[int] = None, category: Optional[str] = None,
+                   q: Optional[str] = None, ctx: Ctx = Depends(get_ctx)):
+        where, params = [], []
+        if assignee_id is not None:
+            where.append("assignee_id = ?")
+            params.append(assignee_id)
+        if category:
+            where.append("category = ?")
+            params.append(category)
+        if q:
+            where.append("(title LIKE ? OR description LIKE ?)")
+            params += [f"%{q}%", f"%{q}%"]
+        sql = "SELECT * FROM tasks"
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        sql += " ORDER BY status, position, id"
+        return tasks_out(ctx.conn, ctx.conn.execute(sql, params).fetchall())
+
+    @app.get("/api/tasks/{task_id}")
+    def get_task(task_id: int, ctx: Ctx = Depends(get_ctx)):
+        return task_full(ctx.conn, task_id)
+
+    @app.post("/api/tasks", status_code=201)
+    def create_task(data: TaskCreate, ctx: Ctx = Depends(get_ctx)):
+        conn = ctx.conn
+        ensure_user_exists(conn, data.assignee_id)
+        cur = conn.execute(
+            """INSERT INTO tasks (title, description, status, priority, category, assignee_id,
+                                  creator_id, due_date, recurrence, points, position, completed_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (data.title.strip(), data.description, data.status, data.priority,
+             data.category.strip(), data.assignee_id, ctx.user["id"],
+             data.due_date.isoformat() if data.due_date else None, data.recurrence, data.points,
+             next_position(conn, "tasks", "status", data.status),
+             now_iso() if data.status == "done" else None),
+        )
+        task_id = cur.lastrowid
+        add_checklist(conn, task_id, data.checklist)
+        ctx.log(task_id, "created")
+        task = get_task_row(conn, task_id)
+        if task["assignee_id"]:
+            notify_assigned(ctx, task)
+        return task_full(conn, task_id)
+
+    @app.patch("/api/tasks/{task_id}")
+    def update_task(task_id: int, data: TaskUpdate, ctx: Ctx = Depends(get_ctx)):
+        conn = ctx.conn
+        task = get_task_row(conn, task_id)
+        changes = data.model_dump(exclude_unset=True)
+        for required in ("title", "description", "status", "priority", "category", "recurrence", "points"):
+            if required in changes and changes[required] is None:
+                raise HTTPException(422, f"Поле {required} не может быть пустым")
+        if "assignee_id" in changes:
+            ensure_user_exists(conn, changes["assignee_id"])
+        if changes.get("due_date") is not None:
+            changes["due_date"] = changes["due_date"].isoformat()
+        for key in ("title", "category"):
+            if key in changes:
+                changes[key] = changes[key].strip()
+        # В базу и историю попадает только то, что действительно поменялось.
+        changes = {k: v for k, v in changes.items() if task[k] != v}
+
+        new_status = changes.pop("status", task["status"])
+        if changes:
+            cols = ", ".join(f"{k} = ?" for k in changes)
+            conn.execute(f"UPDATE tasks SET {cols} WHERE id = ?", (*changes.values(), task_id))
+        if "assignee_id" in changes:
+            ctx.log(task_id, "assigned", **{"from": task["assignee_id"], "to": changes["assignee_id"]})
+            if changes["assignee_id"]:
+                notify_assigned(ctx, get_task_row(conn, task_id))
+        edited = [k for k in EDITABLE_FIELDS if k in changes]
+        if edited:
+            ctx.log(task_id, "edited", fields=edited)
+        if new_status != task["status"]:
+            conn.execute(
+                "UPDATE tasks SET status = ?, position = ? WHERE id = ?",
+                (new_status, next_position(conn, "tasks", "status", new_status), task_id),
+            )
+            change_status(ctx, task_id, task["status"], new_status)
+        if changes or new_status != task["status"]:
+            conn.execute("UPDATE tasks SET updated_at = ? WHERE id = ?", (now_iso(), task_id))
+        return task_full(conn, task_id)
+
+    @app.post("/api/tasks/{task_id}/move")
+    def move_task(task_id: int, data: MoveIn, ctx: Ctx = Depends(get_ctx)):
+        conn = ctx.conn
+        task = get_task_row(conn, task_id)
+        ids = column_ids(conn, data.status, exclude=task_id)
+        ids.insert(min(data.index, len(ids)), task_id)
+        conn.execute("UPDATE tasks SET status = ? WHERE id = ?", (data.status, task_id))
+        write_order(conn, ids)
+        if data.status != task["status"]:
+            write_order(conn, column_ids(conn, task["status"], exclude=task_id))
+            conn.execute("UPDATE tasks SET updated_at = ? WHERE id = ?", (now_iso(), task_id))
+            change_status(ctx, task_id, task["status"], data.status)
+        return task_full(conn, task_id)
+
+    @app.delete("/api/tasks/{task_id}", status_code=204)
+    def delete_task(task_id: int, ctx: Ctx = Depends(get_ctx)):
+        if ctx.conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,)).rowcount == 0:
+            raise HTTPException(404, "Задача не найдена")
+
+    # --- чек-листы ---
+
+    def get_item(conn: sqlite3.Connection, item_id: int) -> sqlite3.Row:
+        row = conn.execute("SELECT * FROM checklist_items WHERE id = ?", (item_id,)).fetchone()
+        if row is None:
+            raise HTTPException(404, "Пункт не найден")
+        return row
+
+    @app.post("/api/tasks/{task_id}/checklist", status_code=201)
+    def add_item(task_id: int, data: TextIn, ctx: Ctx = Depends(get_ctx)):
+        get_task_row(ctx.conn, task_id)
+        if len(data.text) > 200:
+            raise HTTPException(422, "Пункт длиннее 200 символов")
+        add_checklist(ctx.conn, task_id, [data.text])
+        row = ctx.conn.execute(
+            "SELECT * FROM checklist_items WHERE task_id = ? ORDER BY id DESC LIMIT 1", (task_id,)
+        ).fetchone()
+        return item_out(row)
+
+    @app.patch("/api/checklist/{item_id}")
+    def update_item(item_id: int, data: ChecklistUpdate, ctx: Ctx = Depends(get_ctx)):
+        get_item(ctx.conn, item_id)
+        if data.text is not None:
+            ctx.conn.execute("UPDATE checklist_items SET text = ? WHERE id = ?", (data.text.strip(), item_id))
+        if data.done is not None:
+            ctx.conn.execute("UPDATE checklist_items SET done = ? WHERE id = ?", (int(data.done), item_id))
+        return item_out(get_item(ctx.conn, item_id))
+
+    @app.delete("/api/checklist/{item_id}", status_code=204)
+    def delete_item(item_id: int, ctx: Ctx = Depends(get_ctx)):
+        get_item(ctx.conn, item_id)
+        ctx.conn.execute("DELETE FROM checklist_items WHERE id = ?", (item_id,))
+
+    # --- история и комментарии ---
+
+    @app.get("/api/tasks/{task_id}/events")
+    def task_events(task_id: int, ctx: Ctx = Depends(get_ctx)):
+        get_task_row(ctx.conn, task_id)
+        rows = ctx.conn.execute(
+            "SELECT * FROM task_events WHERE task_id = ? ORDER BY id", (task_id,)
+        ).fetchall()
+        return [event_out(r) for r in rows]
+
+    @app.post("/api/tasks/{task_id}/comments", status_code=201)
+    def add_comment(task_id: int, data: TextIn, ctx: Ctx = Depends(get_ctx)):
+        task = get_task_row(ctx.conn, task_id)
+        event_id = ctx.log(task_id, "comment", text=data.text)
+        ctx.notify(
+            [task["assignee_id"], task["creator_id"]],
+            f"💬 {ctx.actor} о задаче {quoted(task)}:\n{escape(data.text)}",
+        )
+        return event_out(ctx.conn.execute("SELECT * FROM task_events WHERE id = ?", (event_id,)).fetchone())
+
+    @app.delete("/api/events/{event_id}", status_code=204)
+    def delete_comment(event_id: int, ctx: Ctx = Depends(get_ctx)):
+        row = ctx.conn.execute("SELECT * FROM task_events WHERE id = ?", (event_id,)).fetchone()
+        if row is None:
+            raise HTTPException(404, "Запись не найдена")
+        if row["kind"] != "comment":
+            raise HTTPException(400, "Удалять можно только комментарии")
+        if row["user_id"] != ctx.user["id"] and not ctx.user["is_admin"]:
+            raise HTTPException(403, "Можно удалить только свой комментарий")
+        ctx.conn.execute("DELETE FROM task_events WHERE id = ?", (event_id,))
+
+    # --- справочники и статистика ---
+
+    @app.get("/api/categories")
+    def categories(ctx: Ctx = Depends(get_ctx)):
+        rows = ctx.conn.execute(
+            "SELECT DISTINCT category FROM tasks WHERE category != '' ORDER BY category COLLATE NOCASE"
+        ).fetchall()
+        return [r["category"] for r in rows]
+
+    @app.get("/api/stats")
+    def stats(ctx: Ctx = Depends(get_ctx)):
+        since = (datetime.now(timezone.utc) - timedelta(days=7)).strftime("%Y-%m-%d %H:%M:%S")
+        rows = ctx.conn.execute(
+            """SELECT u.id AS user_id,
+                      SUM(t.status != 'done') AS open,
+                      SUM(t.status = 'done' AND t.completed_at >= ?) AS done_week
+               FROM users u LEFT JOIN tasks t ON t.assignee_id = u.id
+               GROUP BY u.id""",
+            (since,),
+        ).fetchall()
+        return [{"user_id": r["user_id"], "open": r["open"] or 0, "done_week": r["done_week"] or 0}
+                for r in rows]
+
+    @app.get("/api/leaderboard")
+    def leaderboard(period: Literal["week", "month", "all"] = "week", ctx: Ctx = Depends(get_ctx)):
+        rows = ctx.conn.execute(
+            """SELECT u.id AS user_id, COALESCE(SUM(t.points), 0) AS points, COUNT(t.id) AS done
+               FROM users u
+               LEFT JOIN tasks t ON t.assignee_id = u.id AND t.status = 'done' AND t.completed_at >= ?
+               GROUP BY u.id
+               ORDER BY points DESC, done DESC, u.display_name COLLATE NOCASE""",
+            (period_start(period),),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")
+    return app

@@ -1,0 +1,5 @@
+# В образ попадают только requirements.txt и app/.
+*
+!requirements.txt
+!app/
+app/**/__pycache__

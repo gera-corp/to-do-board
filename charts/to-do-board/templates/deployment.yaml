@@ -1,0 +1,125 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "to-do-board.fullname" . }}
+  labels:
+    {{- include "to-do-board.labels" . | nindent 4 }}
+spec:
+  # SQLite: строго один экземпляр, старый под останавливается до запуска нового.
+  replicas: 1
+  revisionHistoryLimit: 3
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "to-do-board.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      {{- $annotations := include "to-do-board.vaultAnnotations" . | fromYaml | default dict }}
+      {{- $annotations = merge $annotations (.Values.podAnnotations | default dict) }}
+      {{- with $annotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        {{- include "to-do-board.labels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ include "to-do-board.serviceAccountName" . }}
+      # Токен ServiceAccount нужен только vault-env для входа в Vault (auth method kubernetes).
+      automountServiceAccountToken: {{ .Values.vault.enabled }}
+      enableServiceLinks: false
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: app
+          image: {{ include "to-do-board.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          # Команда задана явно: vault-secrets-webhook оборачивает её в vault-env.
+          command: ["python3", "-m", "app"]
+          ports:
+            - name: http
+              containerPort: 8000
+              protocol: TCP
+          env:
+            - name: TODO_DB
+              value: /data/tasks.db
+            - name: TODO_SQLITE_JOURNAL_MODE
+              value: {{ .Values.config.sqliteJournalMode | quote }}
+            - name: TODO_COOKIE_SECURE
+              value: {{ .Values.config.cookieSecure | quote }}
+            - name: TELEGRAM_DIGEST_HOUR
+              value: {{ .Values.config.telegramDigestHour | quote }}
+            - name: TZ
+              value: {{ .Values.config.timezone | quote }}
+            {{- with include "to-do-board.publicUrl" . }}
+            - name: TODO_PUBLIC_URL
+              value: {{ . | quote }}
+            {{- end }}
+            {{- if .Values.vault.enabled }}
+            {{- range $name, $key := .Values.vault.env }}
+            - name: {{ $name }}
+              value: {{ printf "vault:%s#%s" $.Values.vault.secretPath $key | quote }}
+            {{- end }}
+            {{- end }}
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          startupProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            periodSeconds: 2
+            failureThreshold: 30
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 3
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: data
+          {{- if .Values.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ .Values.persistence.existingClaim | default (include "to-do-board.fullname" .) }}
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        - name: tmp
+          emptyDir:
+            medium: Memory
+            sizeLimit: 16Mi
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
