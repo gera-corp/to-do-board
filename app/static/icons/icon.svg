@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <defs>
+    <radialGradient id="shine" cx="0.35" cy="0.3" r="0.6">
+      <stop offset="0" stop-color="#fff" stop-opacity=".5"/>
+      <stop offset=".5" stop-color="#fff" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="10" stdDeviation="10" flood-color="#1E2933" flood-opacity=".18"/>
+    </filter>
+  </defs>
+  <rect id="bg" width="512" height="512" rx="112" fill="#E7ECEF"/>
+  <g id="art">
+    <g transform="rotate(-6 256 290)" filter="url(#shadow)">
+      <rect x="126" y="150" width="260" height="250" rx="22" fill="#fff"/>
+      <rect x="162" y="246" width="150" height="18" rx="9" fill="#C6D0D8"/>
+      <rect x="162" y="290" width="188" height="18" rx="9" fill="#C6D0D8"/>
+      <rect x="162" y="334" width="110" height="18" rx="9" fill="#C6D0D8"/>
+    </g>
+    <g filter="url(#shadow)">
+      <circle cx="256" cy="158" r="62" fill="#2F5BD3"/>
+      <circle cx="256" cy="158" r="62" fill="url(#shine)"/>
+    </g>
+  </g>
+</svg>

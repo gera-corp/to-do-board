@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 import sqlite3
@@ -9,6 +10,7 @@ from pathlib import Path
 from typing import Literal, Optional
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
+from fastapi.responses import PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
 
@@ -308,6 +310,15 @@ def period_start(period: str) -> str:
     midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
     start = midnight - timedelta(days=now.weekday()) if period == "week" else midnight.replace(day=1)
     return start.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def static_version(root: Path) -> str:
+    """Отпечаток всех файлов фронтенда: меняется с любым изменением интерфейса."""
+    digest = hashlib.sha256()
+    for path in sorted(p for p in Path(root).rglob("*") if p.is_file()):
+        digest.update(path.relative_to(root).as_posix().encode())
+        digest.update(path.read_bytes())
+    return digest.hexdigest()[:16]
 
 
 def make_notifier():
@@ -706,6 +717,18 @@ def create_app(db_path: Optional[str] = None, notifier=None) -> FastAPI:
             (period_start(period),),
         ).fetchall()
         return [dict(r) for r in rows]
+
+    # Service worker отдаётся с версией интерфейса внутри: новый релиз — новый байт-код
+    # sw.js, и браузер сам ставит обновление. Кешировать сам sw.js нельзя.
+    service_worker = (STATIC_DIR / "sw.js").read_text(encoding="utf-8").replace(
+        "__VERSION__", static_version(STATIC_DIR)
+    )
+
+    @app.get("/sw.js", include_in_schema=False)
+    def sw():
+        return PlainTextResponse(
+            service_worker, media_type="text/javascript", headers={"Cache-Control": "no-cache"}
+        )
 
     app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")
     return app

@@ -38,6 +38,7 @@ const state = {
   editingUser: null,
   dragId: null,
   ratingPeriod: "week",
+  offline: false,
 };
 
 const $ = (sel) => document.querySelector(sel);
@@ -67,11 +68,19 @@ function plural(n, one, few, many) {
 class ApiError extends Error {}
 
 async function api(method, path, body) {
-  const res = await fetch(path, {
-    method,
-    headers: body ? { "Content-Type": "application/json" } : {},
-    body: body ? JSON.stringify(body) : undefined,
-  });
+  let res;
+  try {
+    res = await fetch(path, {
+      method,
+      headers: body ? { "Content-Type": "application/json" } : {},
+      body: body ? JSON.stringify(body) : undefined,
+    });
+  } catch {
+    setOffline(true);
+    throw new ApiError("Нет связи с сервером. Изменение не сохранено.");
+  }
+  // Ответ из кеша service worker'а помечен X-Offline: сеть недоступна.
+  setOffline(res.headers.get("X-Offline") === "1");
   if (res.status === 401 && path !== "/api/login") {
     showAuth(false);
     throw new ApiError("Нужно войти");
@@ -116,6 +125,7 @@ let setupMode = false;
 
 async function showAuth(needsSetup) {
   setupMode = needsSetup;
+  clearSavedData();
   $("#app").hidden = true;
   $("#auth").hidden = false;
   $("#auth-name-field").hidden = !needsSetup;
@@ -183,6 +193,11 @@ async function start() {
   try {
     state.me = await api("GET", "/api/me");
   } catch {
+    if (state.offline) {
+      showAuth(false);
+      $("#auth-error").textContent = "Нет связи с сервером. Войти можно будет, когда появится интернет.";
+      return;
+    }
     const { needs_setup } = await api("GET", "/api/setup");
     return showAuth(needs_setup);
   }
@@ -196,7 +211,10 @@ setInterval(() => {
   if (state.me && !document.hidden && !state.dragId && !document.querySelector("dialog[open]")) loadAll().catch(() => {});
 }, REFRESH_MS);
 document.addEventListener("visibilitychange", () => {
-  if (!document.hidden && state.me && !$("#task-dialog").open) loadAll().catch(() => {});
+  if (document.hidden) return;
+  // Установленное приложение на телефоне может висеть открытым днями — проверяем релиз.
+  swRegistration?.update().catch(() => {});
+  if (state.me && !$("#task-dialog").open) loadAll().catch(() => {});
 });
 
 // ---------- фильтры ----------
@@ -956,6 +974,72 @@ document.querySelectorAll("dialog").forEach((d) => {
   d.addEventListener("click", (e) => {
     if (e.target === d || e.target.closest("[data-close]")) d.close();
   });
+  d.addEventListener("close", reloadIfPending);
+});
+
+// ---------- приложение на телефоне (PWA) ----------
+
+let swRegistration = null;
+let reloadPending = false;
+let installPrompt = null;
+
+function setOffline(offline) {
+  if (state.offline === offline) return;
+  state.offline = offline;
+  $("#offline-banner").hidden = !offline;
+  document.body.classList.toggle("offline", offline);
+}
+
+function clearSavedData() {
+  // Данные доски не должны оставаться на устройстве после выхода.
+  if ("caches" in window) caches.delete("data").catch(() => {});
+}
+
+// Новая версия перезагружает страницу, но не посреди правки задачи.
+function reloadWhenIdle() {
+  if (document.querySelector("dialog[open]") || state.dragId != null) reloadPending = true;
+  else location.reload();
+}
+
+function reloadIfPending() {
+  if (reloadPending && !document.querySelector("dialog[open]")) location.reload();
+}
+
+if ("serviceWorker" in navigator) {
+  let hadController = Boolean(navigator.serviceWorker.controller);
+  navigator.serviceWorker.addEventListener("controllerchange", () => {
+    // Самая первая установка ничего не меняет на экране — перезагружать незачем.
+    if (!hadController) {
+      hadController = true;
+      return;
+    }
+    reloadWhenIdle();
+  });
+  navigator.serviceWorker.register("/sw.js")
+    .then((registration) => { swRegistration = registration; })
+    .catch(() => {});
+}
+
+window.addEventListener("online", () => {
+  if (state.me) loadAll().catch(() => {});
+});
+window.addEventListener("offline", () => setOffline(true));
+
+window.addEventListener("beforeinstallprompt", (e) => {
+  e.preventDefault();
+  installPrompt = e;
+  $("#install").hidden = false;
+});
+window.addEventListener("appinstalled", () => {
+  installPrompt = null;
+  $("#install").hidden = true;
+});
+$("#install").addEventListener("click", async () => {
+  if (!installPrompt) return;
+  installPrompt.prompt();
+  await installPrompt.userChoice;
+  installPrompt = null;
+  $("#install").hidden = true;
 });
 
 function toast(text) {
