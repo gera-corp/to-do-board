@@ -3,7 +3,7 @@
 # ---------- зависимости ----------
 # Сборка идёт на платформе сборщика: wheel-файлы под целевую архитектуру скачиваются
 # готовыми (--platform), без эмуляции QEMU и без компиляции.
-FROM --platform=$BUILDPLATFORM python:3.13-slim-trixie@sha256:70729b46c69b4f1e97c4822c1af3df53a1476cf5ddc6c087c0c10bc3a5678c2f AS deps
+FROM --platform=$BUILDPLATFORM python:3.14-slim-trixie@sha256:a2b82f3c48559aa0a8446d9af49826b6e2b2016f4cd2afabfe6013ec53729170 AS deps
 ARG TARGETARCH
 ENV PIP_NO_CACHE_DIR=1 PIP_DISABLE_PIP_VERSION_CHECK=1
 WORKDIR /build
