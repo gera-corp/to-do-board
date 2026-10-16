@@ -152,7 +152,17 @@ docker run --rm -p 8000:8000 --read-only --cap-drop ALL \
 
 ## Kubernetes
 
-Helm-чарт лежит в `charts/to-do-board`. Основные параметры:
+Helm-чарт лежит в `charts/to-do-board`. При теге `v1.2.3` CI сначала собирает и проверяет образ `1.2.3`, а потом публикует чарт той же версии в `oci://ghcr.io/gera-corp/charts/to-do-board`.
+
+В домашнем кластере доской управляет ArgoCD. Application и значения для кластера лежат в репозитории [gera-corp-org/argocd](https://github.com/gera-corp-org/argocd), в `home_cluster/helm_app/to-do-board`. ArgoCD следит за версиями `0.*`, поэтому выпуск новой версии выглядит так:
+
+```bash
+git tag -a v0.3.0 -m "v0.3.0" && git push origin v0.3.0
+```
+
+Через несколько минут после окончания CI ArgoCD сам обновит доску.
+
+Основные параметры чарта:
 
 | Параметр | По умолчанию | Что задаёт |
 |---|---|---|
@@ -169,5 +179,7 @@ Helm-чарт лежит в `charts/to-do-board`. Основные параме�
 | `networkPolicy.ingressNamespaces` | `traefik` | откуда разрешён входящий трафик |
 
 Секреты подставляет bank-vaults `vault-secrets-webhook`: в манифесте переменная выглядит как `vault:secret/data/to-do-board#TELEGRAM_BOT_TOKEN`, а реальное значение подставляется только в память процесса при старте. Ни в Kubernetes Secret, ни в etcd оно не попадает. При изменении секрета в Vault под перезапускается (`vault-secrets-reloader`).
+
+Том с базой защищён от удаления: и `helm uninstall`, и удаление приложения в ArgoCD его не трогают.
 
 Под запускается с профилем Pod Security `restricted`: без root, без capabilities, с `seccomp: RuntimeDefault` и файловой системой только для чтения. Реплика всегда одна, стратегия обновления — `Recreate`, потому что SQLite не поддерживает несколько писателей.

@@ -2,7 +2,7 @@
 
 image:
   repository: ghcr.io/gera-corp/to-do-board
-  # Пусто — используется appVersion чарта.
+  # Пусто — используется appVersion чарта (у опубликованного чарта совпадает с его версией).
   tag: ""
   # Если указан (sha256:...), образ берётся по дайджесту, а tag игнорируется.
   digest: ""
@@ -110,7 +110,7 @@ persistence:
   size: 1Gi
   # Использовать уже существующий PVC вместо создания нового.
   existingClaim: ""
-  # PVC не удаляется при helm uninstall, чтобы не потерять базу.
+  # PVC не удаляется при helm uninstall и при удалении приложения в ArgoCD.
   keepOnUninstall: true
 
 resources:

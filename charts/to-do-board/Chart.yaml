@@ -2,8 +2,10 @@ apiVersion: v2
 name: to-do-board
 description: Канбан-доска для домашних дел (FastAPI + SQLite)
 type: application
-version: 0.2.0
-appVersion: "0.2.0"
+# Версии ниже — для установки из исходников. При публикации CI подставляет
+# в version и appVersion номер из git-тега (v1.2.3 -> 1.2.3).
+version: 0.0.0-dev
+appVersion: "latest"
 home: https://github.com/gera-corp/to-do-board
 sources:
   - https://github.com/gera-corp/to-do-board

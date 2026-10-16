@@ -7,7 +7,9 @@ metadata:
     {{- include "to-do-board.labels" . | nindent 4 }}
   {{- if .Values.persistence.keepOnUninstall }}
   annotations:
+    # Не удалять том с базой ни при helm uninstall, ни при prune/удалении в ArgoCD.
     helm.sh/resource-policy: keep
+    argocd.argoproj.io/sync-options: Delete=false
   {{- end }}
 spec:
   accessModes:

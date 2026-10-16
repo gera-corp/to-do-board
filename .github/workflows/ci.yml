@@ -138,3 +138,30 @@ jobs:
           ignore-unfixed: true
           exit-code: "1"
           skip-setup-trivy: true
+
+  chart:
+    name: Чарт
+    needs: image
+    # Чарт публикуется только для релизов и только после того, как образ этой версии
+    # собран и проверен: ArgoCD не увидит версию, для которой ещё нет образа.
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+      - name: Опубликовать чарт в GHCR
+        env:
+          TAG: ${{ github.ref_name }}
+          REGISTRY_USER: ${{ github.actor }}
+          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CHARTS: oci://ghcr.io/${{ github.repository_owner }}/charts
+        run: |
+          VERSION="${TAG#v}"
+          helm package charts/to-do-board --version "$VERSION" --app-version "$VERSION" -d dist
+          helm registry login ghcr.io -u "$REGISTRY_USER" --password-stdin <<< "$REGISTRY_TOKEN"
+          helm push "dist/to-do-board-${VERSION}.tgz" "$CHARTS"
