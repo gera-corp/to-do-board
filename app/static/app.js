@@ -317,6 +317,10 @@ function renderCard(t) {
   }
   if (t.recurrence !== "none") meta.push(h("span", { class: "tag", title: "Повторяется" }, `↻ ${RECURRENCE[t.recurrence]}`));
   if (t.category) meta.push(h("span", { class: "tag" }, t.category));
+  // Очки — последним элементом строки меток: в углу карточки они наезжали на магнит.
+  if (t.points > 1) {
+    meta.push(h("span", { class: "points", title: `${t.points} ${plural(t.points, "очко", "очка", "очков")} за выполнение` }, `+${t.points}`));
+  }
 
   const card = h("article", {
     class: `card ${t.priority} ${done ? "done" : ""}`,
@@ -338,7 +342,6 @@ function renderCard(t) {
     },
   },
     magnet(userById(t.assignee_id)),
-    t.points > 1 ? h("span", { class: "points", title: `${t.points} ${plural(t.points, "очко", "очка", "очков")} за выполнение` }, `+${t.points}`) : null,
     h("div", { class: "title" }, t.title),
     h("div", { class: "meta" }, meta),
   );
