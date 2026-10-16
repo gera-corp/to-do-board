@@ -13,6 +13,15 @@ const FIELD_NAMES = {
   title: "название", description: "описание", priority: "важность", category: "категорию",
   due_date: "срок", recurrence: "повтор", points: "очки",
 };
+const THEMES = [
+  { id: "auto", name: "Как в системе" },
+  { id: "light", name: "Эмаль" },
+  { id: "dark", name: "Ночь" },
+  { id: "mint", name: "Мята" },
+  { id: "kraft", name: "Крафт" },
+  { id: "midnight", name: "Полночь" },
+  { id: "contrast", name: "Контраст" },
+];
 const DONE_RECENT_DAYS = 14;
 const REFRESH_MS = 30_000;
 
@@ -156,6 +165,7 @@ async function loadAll() {
     api("GET", "/api/stats"),
   ]);
   Object.assign(state, { me, users, tasks, stats });
+  syncTheme();
   renderAll();
 }
 
@@ -700,6 +710,74 @@ $("#rating-periods").addEventListener("click", (e) => {
   state.ratingPeriod = period;
   renderRating().catch((err) => toast(err.message));
 });
+
+// ---------- темы ----------
+
+const themeDialog = $("#theme-dialog");
+let themeSaving = false;
+
+function currentTheme() {
+  return document.documentElement.dataset.theme || "auto";
+}
+
+function applyTheme(theme) {
+  document.documentElement.dataset.theme = theme;
+  try { localStorage.setItem("theme", theme); } catch {}
+  updateThemeColor();
+}
+
+// Цвет панели браузера на телефоне — под фон текущей темы.
+function updateThemeColor() {
+  const color = getComputedStyle(document.documentElement).getPropertyValue("--enamel").trim();
+  if (color) $('meta[name="theme-color"]').setAttribute("content", color);
+}
+
+// Тема из профиля важнее локальной: её могли сменить на другом устройстве.
+function syncTheme() {
+  if (!themeSaving && state.me?.theme && state.me.theme !== currentTheme()) applyTheme(state.me.theme);
+}
+
+function renderThemes() {
+  const active = currentTheme();
+  $("#theme-list").replaceChildren(
+    ...THEMES.map((t) =>
+      h("button", {
+        type: "button", class: "theme-tile", role: "radio", "aria-checked": String(t.id === active),
+        onclick: () => chooseTheme(t.id),
+      },
+        h("span", { class: "theme-preview", "data-theme": t.id, "aria-hidden": "true" },
+          h("span", { class: "pv-col" }, h("span", { class: "pv-card" }), h("span", { class: "pv-card urgent short" })),
+          h("span", { class: "pv-col" }, h("span", { class: "pv-card accent" })),
+          h("span", { class: "pv-col" }, h("span", { class: "pv-card short" })),
+        ),
+        h("span", { class: "theme-name" }, t.name),
+      ),
+    ),
+  );
+}
+
+async function chooseTheme(theme) {
+  const previous = currentTheme();
+  applyTheme(theme);
+  renderThemes();
+  themeSaving = true;
+  try {
+    state.me = await api("PATCH", `/api/users/${state.me.id}`, { theme });
+  } catch (err) {
+    applyTheme(previous);
+    renderThemes();
+    toast(`Тема не сохранилась: ${err.message}`);
+  } finally {
+    themeSaving = false;
+  }
+}
+
+$("#open-theme").addEventListener("click", () => {
+  renderThemes();
+  themeDialog.showModal();
+});
+matchMedia("(prefers-color-scheme: dark)").addEventListener("change", updateThemeColor);
+updateThemeColor();
 
 // ---------- люди ----------
 

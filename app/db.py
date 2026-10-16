@@ -74,6 +74,10 @@ MIGRATIONS = [
         value TEXT NOT NULL
     );
     """,
+    # 3: тема оформления пользователя
+    """
+    ALTER TABLE users ADD COLUMN theme TEXT NOT NULL DEFAULT 'auto';
+    """,
 ]
 
 

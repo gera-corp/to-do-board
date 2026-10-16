@@ -25,6 +25,7 @@ SESSION_DAYS = 90
 Status = Literal["todo", "in_progress", "review", "done"]
 Priority = Literal["low", "normal", "high"]
 Recurrence = Literal["none", "daily", "weekly", "monthly"]
+Theme = Literal["auto", "light", "dark", "mint", "kraft", "midnight", "contrast"]
 Color = Field(default="#2F5BD3", pattern=r"^#[0-9A-Fa-f]{6}$")
 Points = Field(default=1, ge=0, le=100)
 
@@ -47,6 +48,7 @@ class UserUpdate(BaseModel):
     password: Optional[str] = Field(default=None, min_length=4, max_length=128)
     color: Optional[str] = Field(default=None, pattern=r"^#[0-9A-Fa-f]{6}$")
     is_admin: Optional[bool] = None
+    theme: Optional[Theme] = None
 
 
 class LoginIn(BaseModel):
@@ -126,6 +128,7 @@ def user_out(row: sqlite3.Row) -> dict:
         "color": row["color"],
         "is_admin": bool(row["is_admin"]),
         "telegram_linked": row["telegram_chat_id"] is not None,
+        "theme": row["theme"],
     }
 
 

@@ -254,3 +254,22 @@ def test_bot_poller_links_chat_and_queues_reply(admin, db_path):
 
     tg.send(900, "привет")
     assert tg.queue.get_nowait() == (900, "привет\n\nhttps://home.example")
+
+
+# ---------- темы ----------
+
+def test_theme_defaults_to_auto_and_is_saved(app, admin):
+    me = admin.get("/api/me").json()
+    assert me["theme"] == "auto"
+    r = admin.patch(f"/api/users/{me['id']}", json={"theme": "mint"})
+    assert r.status_code == 200 and r.json()["theme"] == "mint"
+    assert admin.get("/api/me").json()["theme"] == "mint"
+    # тема личная: у других пользователей она своя
+    make_user(admin)
+    petya = login(app, "petya", "pass1234")
+    assert petya.get("/api/me").json()["theme"] == "auto"
+
+
+def test_unknown_theme_rejected(admin):
+    me = admin.get("/api/me").json()
+    assert admin.patch(f"/api/users/{me['id']}", json={"theme": "rainbow"}).status_code == 422

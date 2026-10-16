@@ -1,39 +1,130 @@
+/* ---------- темы ----------
+   Тема задаётся атрибутом data-theme на <html>. Селекторы намеренно не привязаны к :root,
+   чтобы превью в окне «Оформление» показывало каждую тему своими же токенами.
+   Каждая тема определяет все цветовые токены. */
+
 :root {
+  --display: "Unbounded", "Onest", system-ui, sans-serif;
+  --text: "Onest", system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+/* Эмаль — светлая по умолчанию */
+:root, [data-theme="light"], [data-theme="auto"] {
   --enamel: #E7ECEF;
   --well: #DAE2E7;
   --paper: #FFFFFF;
   --ink: #1E2933;
   --muted: #667684;
   --line: #C6D0D8;
-  --cobalt: #2F5BD3;
-  --cobalt-ink: #FFFFFF;
+  --accent: #2F5BD3;
+  --accent-ink: #FFFFFF;
   --danger: #C2372C;
   --warn: #A86A10;
   --warn-bg: #FCEFD6;
   --danger-bg: #FBE3E0;
-  --focus: #2F5BD3;
-  --display: "Unbounded", "Onest", system-ui, sans-serif;
-  --text: "Onest", system-ui, -apple-system, "Segoe UI", sans-serif;
   color-scheme: light;
 }
 
+/* Ночь: и как явный выбор, и как тёмный вариант «Как в системе» */
+[data-theme="dark"] {
+  --enamel: #141A20;
+  --well: #1B232A;
+  --paper: #232D36;
+  --ink: #E3E9EE;
+  --muted: #93A1AE;
+  --line: #33404B;
+  --accent: #7096F2;
+  --accent-ink: #0F1720;
+  --danger: #F07B70;
+  --warn: #E9B04F;
+  --warn-bg: #3A2E17;
+  --danger-bg: #3C1F1C;
+  color-scheme: dark;
+}
 @media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) {
+  :root:not([data-theme]), [data-theme="auto"] {
     --enamel: #141A20;
     --well: #1B232A;
     --paper: #232D36;
     --ink: #E3E9EE;
     --muted: #93A1AE;
     --line: #33404B;
-    --cobalt: #7096F2;
-    --cobalt-ink: #0F1720;
+    --accent: #7096F2;
+    --accent-ink: #0F1720;
     --danger: #F07B70;
     --warn: #E9B04F;
     --warn-bg: #3A2E17;
     --danger-bg: #3C1F1C;
-    --focus: #7096F2;
     color-scheme: dark;
   }
+}
+
+/* Мята — ретро-холодильник */
+[data-theme="mint"] {
+  --enamel: #D9EAE2;
+  --well: #C6DDD2;
+  --paper: #F9FCFA;
+  --ink: #16302A;
+  --muted: #4F6D63;
+  --line: #A9C6B9;
+  --accent: #0F7A62;
+  --accent-ink: #FFFFFF;
+  --danger: #B3261E;
+  --warn: #855600;
+  --warn-bg: #F4E4BF;
+  --danger-bg: #F5D9D5;
+  color-scheme: light;
+}
+
+/* Крафт — тёплая бумага с синими чернилами */
+[data-theme="kraft"] {
+  --enamel: #E6DCCB;
+  --well: #D9CAB2;
+  --paper: #FBF7F0;
+  --ink: #2A2017;
+  --muted: #6E5D48;
+  --line: #C9B79B;
+  --accent: #2B5C8A;
+  --accent-ink: #FFFFFF;
+  --danger: #A8321F;
+  --warn: #835400;
+  --warn-bg: #F3E0B8;
+  --danger-bg: #F2D5CB;
+  color-scheme: light;
+}
+
+/* Полночь — тёмно-синяя с мятным акцентом */
+[data-theme="midnight"] {
+  --enamel: #0D1626;
+  --well: #132036;
+  --paper: #1A2943;
+  --ink: #E4ECF7;
+  --muted: #8E9FBA;
+  --line: #2A3C5A;
+  --accent: #5FD3B0;
+  --accent-ink: #08201A;
+  --danger: #FF8A80;
+  --warn: #F2C46B;
+  --warn-bg: #3A3020;
+  --danger-bg: #42212A;
+  color-scheme: dark;
+}
+
+/* Контраст — максимум читаемости */
+[data-theme="contrast"] {
+  --enamel: #FFFFFF;
+  --well: #EDEDED;
+  --paper: #FFFFFF;
+  --ink: #000000;
+  --muted: #2E2E2E;
+  --line: #000000;
+  --accent: #0033CC;
+  --accent-ink: #FFFFFF;
+  --danger: #B00000;
+  --warn: #6B4300;
+  --warn-bg: #FFE9A8;
+  --danger-bg: #FFD6D6;
+  color-scheme: light;
 }
 
 * { box-sizing: border-box; }
@@ -45,7 +136,7 @@ body {
   min-height: 100vh;
 }
 [hidden] { display: none !important; }
-:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
 h1, h2, h3 { margin: 0; font-weight: 600; }
 .wordmark {
@@ -74,7 +165,7 @@ input, select, textarea {
   min-width: 0;
 }
 textarea { resize: vertical; }
-input:focus, select:focus, textarea:focus { border-color: var(--cobalt); outline: none; box-shadow: 0 0 0 3px color-mix(in srgb, var(--cobalt) 20%, transparent); }
+input:focus, select:focus, textarea:focus { border-color: var(--accent); outline: none; box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 20%, transparent); }
 
 .btn {
   font: 500 14px/1 var(--text);
@@ -84,7 +175,7 @@ input:focus, select:focus, textarea:focus { border-color: var(--cobalt); outline
   cursor: pointer;
   white-space: nowrap;
 }
-.btn.primary { background: var(--cobalt); color: var(--cobalt-ink); }
+.btn.primary { background: var(--accent); color: var(--accent-ink); }
 .btn.primary:hover { filter: brightness(1.08); }
 .btn.ghost { background: transparent; color: var(--ink); border-color: var(--line); }
 .btn.ghost:hover { background: var(--well); }
@@ -134,7 +225,7 @@ input:focus, select:focus, textarea:focus { border-color: var(--cobalt); outline
 /* ---------- магнит (аватар) ---------- */
 
 .magnet {
-  --c: var(--cobalt);
+  --c: var(--accent);
   width: 30px; height: 30px; border-radius: 50%;
   display: inline-grid; place-items: center; flex: none;
   background:
@@ -189,7 +280,7 @@ input:focus, select:focus, textarea:focus { border-color: var(--cobalt); outline
   cursor: grab;
   user-select: none;
 }
-.card:hover { border-color: color-mix(in srgb, var(--cobalt) 45%, var(--line)); }
+.card:hover { border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); }
 .card .magnet { position: absolute; top: -8px; right: 10px; }
 .card .title { font-weight: 500; overflow-wrap: anywhere; }
 .card.low .title { color: var(--muted); }
@@ -203,7 +294,7 @@ input:focus, select:focus, textarea:focus { border-color: var(--cobalt); outline
 .tag.urgent { color: var(--danger); background: transparent; padding-left: 0; font-weight: 500; }
 
 .card.dragging { opacity: .35; }
-.drop-marker { height: 4px; border-radius: 2px; background: var(--cobalt); margin: -9px 4px; }
+.drop-marker { height: 4px; border-radius: 2px; background: var(--accent); margin: -9px 4px; }
 
 .show-old {
   margin-top: 10px; background: none; border: 0; color: var(--muted);
@@ -261,7 +352,7 @@ dialog.wide .task-layout { grid-template-columns: minmax(0, 1.35fr) minmax(0, 1f
 .checklist ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
 .checklist li { display: flex; align-items: center; gap: 6px; border-bottom: 1px dashed var(--line); }
 .checklist li label { flex: 1; flex-direction: row; align-items: center; gap: 10px; color: var(--ink); font-size: 15px; padding: 7px 0; cursor: pointer; }
-.checklist li input { width: 18px; height: 18px; accent-color: var(--cobalt); flex: none; }
+.checklist li input { width: 18px; height: 18px; accent-color: var(--accent); flex: none; }
 .checklist li.done span { text-decoration: line-through; color: var(--muted); }
 .checklist li .icon-btn { font-size: 20px; opacity: .5; }
 .checklist li .icon-btn:hover { opacity: 1; }
@@ -300,7 +391,7 @@ dialog.wide .task-layout { grid-template-columns: minmax(0, 1.35fr) minmax(0, 1f
   position: absolute; right: 12px; bottom: 9px;
   font: 500 12px var(--display); color: var(--muted);
 }
-.tag.complete { color: var(--cobalt); }
+.tag.complete { color: var(--accent); }
 
 .segmented { display: inline-flex; background: var(--well); border-radius: 10px; padding: 3px; align-self: flex-start; }
 .segmented button {
@@ -318,7 +409,30 @@ dialog.wide .task-layout { grid-template-columns: minmax(0, 1.35fr) minmax(0, 1f
 .rating .score { font: 500 14px var(--display); font-variant-numeric: tabular-nums; }
 .rating .leader .score { font-size: 17px; }
 .bar { height: 8px; border-radius: 4px; background: var(--well); overflow: hidden; }
-.bar span { display: block; height: 100%; border-radius: 4px; background: var(--c, var(--cobalt)); transition: width .4s ease-out; }
+.bar span { display: block; height: 100%; border-radius: 4px; background: var(--c, var(--accent)); transition: width .4s ease-out; }
+
+/* ---------- выбор темы ---------- */
+
+.themes { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 12px; }
+.theme-tile {
+  display: flex; flex-direction: column; gap: 8px;
+  border: 2px solid transparent; border-radius: 14px; padding: 6px;
+  background: none; cursor: pointer; text-align: left;
+  font: 500 14px var(--text); color: var(--ink);
+}
+.theme-tile:hover { border-color: var(--line); }
+.theme-tile[aria-checked="true"] { border-color: var(--accent); }
+.theme-preview {
+  display: grid; grid-template-columns: repeat(3, 1fr); gap: 5px;
+  height: 84px; padding: 8px; border-radius: 10px;
+  background: var(--enamel); border: 1px solid var(--line);
+}
+.pv-col { display: flex; flex-direction: column; gap: 4px; padding: 4px; border-radius: 6px; background: var(--well); }
+.pv-card { height: 14px; border-radius: 3px; background: var(--paper); border: 1px solid var(--line); }
+.pv-card.short { width: 65%; }
+.pv-card.accent { background: var(--accent); border-color: var(--accent); }
+.pv-card.urgent { border-left: 3px solid var(--danger); }
+.theme-name { padding: 0 2px 2px; }
 
 /* ---------- Telegram и уведомления ---------- */
 

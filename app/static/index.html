@@ -4,6 +4,11 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Наш дом</title>
+  <meta name="theme-color" content="#E7ECEF">
+  <script>
+    // Тема до загрузки стилей, чтобы страница не мигала светлой темой.
+    try { document.documentElement.dataset.theme = localStorage.getItem("theme") || "auto"; } catch {}
+  </script>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><circle cx='16' cy='16' r='13' fill='%232F5BD3'/></svg>">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -34,6 +39,7 @@
         <select id="category-filter" aria-label="Фильтр по категории"></select>
         <button class="btn primary" id="new-task">Новая задача</button>
         <button class="btn ghost" id="open-rating">Рейтинг</button>
+        <button class="btn ghost" id="open-theme">Тема</button>
         <button class="btn ghost" id="open-people">Люди</button>
         <button class="btn ghost" id="logout">Выйти</button>
       </div>
@@ -106,6 +112,18 @@
           <button class="btn primary">Отправить</button>
         </form>
       </aside>
+    </div>
+  </dialog>
+
+  <!-- Оформление -->
+  <dialog id="theme-dialog">
+    <div class="sheet">
+      <div class="sheet-head">
+        <h2>Оформление</h2>
+        <button type="button" class="icon-btn" data-close aria-label="Закрыть">×</button>
+      </div>
+      <div class="themes" id="theme-list" role="radiogroup" aria-label="Тема"></div>
+      <p class="muted small">Тема сохраняется в вашем профиле и будет одинаковой на всех устройствах.</p>
     </div>
   </dialog>
 
