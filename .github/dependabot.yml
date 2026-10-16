@@ -11,6 +11,11 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    ignore:
+      # Версия Python в сборочной стадии должна совпадать с distroless (3.13):
+      # переход на новую минорную версию делается вручную вместе с базовым образом.
+      - dependency-name: python
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
   - package-ecosystem: pip
     directory: /
     schedule:
