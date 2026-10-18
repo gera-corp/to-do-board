@@ -10,11 +10,11 @@ from .helpers import board, login, make_task, make_user
 # ---------- настройка и вход ----------
 
 def test_setup_creates_admin_once(anon):
-    assert anon.get("/api/setup").json() == {"needs_setup": True}
+    assert anon.get("/api/setup").json()["needs_setup"] is True
     r = anon.post("/api/setup", json={"username": "mama", "display_name": "Мама", "password": "secret"})
     assert r.json()["is_admin"] is True
     assert anon.get("/api/me").json()["username"] == "mama"
-    assert anon.get("/api/setup").json() == {"needs_setup": False}
+    assert anon.get("/api/setup").json()["needs_setup"] is False
     again = anon.post("/api/setup", json={"username": "x", "display_name": "X", "password": "secret"})
     assert again.status_code == 409
 

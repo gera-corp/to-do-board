@@ -1,5 +1,7 @@
 import hashlib
+import hmac
 import json
+import re
 import os
 import sqlite3
 from contextlib import asynccontextmanager
@@ -10,19 +12,23 @@ from pathlib import Path
 from typing import Literal, Optional
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import PlainTextResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
 
-from . import db
+from . import db, google
 from .config import load_env_file
 from .recurrence import next_due
-from .security import hash_password, new_token, verify_password
+from .security import DECOY_PASSWORD_HASH, LoginLimiter, hash_password, new_token, verify_password
 from .telegram import NullNotifier, TelegramBot, short_date
 
 STATIC_DIR = Path(__file__).parent / "static"
 SESSION_COOKIE = "session"
 SESSION_DAYS = 90
+OAUTH_COOKIE = "oauth_state"
+OAUTH_COOKIE_PATH = "/api/auth/google"
+OAUTH_STATE_MINUTES = 10
+EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 Status = Literal["todo", "in_progress", "review", "done"]
 Priority = Literal["low", "normal", "high"]
@@ -37,12 +43,25 @@ EDITABLE_FIELDS = ("title", "description", "priority", "category", "due_date", "
 
 # ---------- схемы ----------
 
+def normalize_google_email(value: Optional[str]) -> Optional[str]:
+    """Почта Google хранится в нижнем регистре; пустая строка — «отвязать»."""
+    if value is None:
+        return None
+    value = value.strip().lower()
+    if value and not EMAIL_RE.match(value):
+        raise ValueError("некорректный адрес почты")
+    return value
+
+
 class UserCreate(BaseModel):
     username: str = Field(min_length=1, max_length=32, pattern=r"^[\w.-]+$")
     display_name: str = Field(min_length=1, max_length=64)
     password: str = Field(min_length=4, max_length=128)
     color: str = Color
     is_admin: bool = False
+    google_email: Optional[str] = Field(default=None, max_length=254)
+
+    _google_email = field_validator("google_email")(normalize_google_email)
 
 
 class UserUpdate(BaseModel):
@@ -51,6 +70,9 @@ class UserUpdate(BaseModel):
     color: Optional[str] = Field(default=None, pattern=r"^#[0-9A-Fa-f]{6}$")
     is_admin: Optional[bool] = None
     theme: Optional[Theme] = None
+    google_email: Optional[str] = Field(default=None, max_length=254)
+
+    _google_email = field_validator("google_email")(normalize_google_email)
 
 
 class LoginIn(BaseModel):
@@ -131,6 +153,7 @@ def user_out(row: sqlite3.Row) -> dict:
         "is_admin": bool(row["is_admin"]),
         "telegram_linked": row["telegram_chat_id"] is not None,
         "theme": row["theme"],
+        "google_email": row["google_email"],
     }
 
 
@@ -342,6 +365,19 @@ def create_app(db_path: Optional[str] = None, notifier=None) -> FastAPI:
     cookie_secure = os.environ.get("TODO_COOKIE_SECURE", "").lower() in ("1", "true", "yes")
     db.init_db(db_path, journal_mode=os.environ.get("TODO_SQLITE_JOURNAL_MODE") or "WAL")
 
+    # Вход по паролю можно выключить, когда все перейдут на Google.
+    password_login = os.environ.get("TODO_PASSWORD_LOGIN", "true").lower() not in ("0", "false", "no")
+    google_client_id = os.environ.get("GOOGLE_CLIENT_ID", "")
+    google_client_secret = os.environ.get("GOOGLE_CLIENT_SECRET", "")
+    public_url = (os.environ.get("TODO_PUBLIC_URL") or "").rstrip("/")
+    # Без адреса доски Google некуда вернуть пользователя, поэтому нужны все три.
+    google_enabled = bool(google_client_id and google_client_secret and public_url)
+    google_redirect_uri = f"{public_url}/api/auth/google/callback"
+    # Попытки считаются и по логину (перебор пароля одного человека с разных адресов),
+    # и по IP (перебор разных логинов с одного адреса).
+    account_limiter = LoginLimiter(max_failures=10)
+    ip_limiter = LoginLimiter(max_failures=30)
+
     @asynccontextmanager
     async def lifespan(_: FastAPI):
         notifier.start(db_path)
@@ -397,13 +433,21 @@ def create_app(db_path: Optional[str] = None, notifier=None) -> FastAPI:
             secure=cookie_secure,
         )
 
+    def ensure_google_email_free(conn: sqlite3.Connection, email: str, user_id: Optional[int]) -> None:
+        row = conn.execute("SELECT id FROM users WHERE google_email = ?", (email,)).fetchone()
+        if row and row["id"] != user_id:
+            raise HTTPException(409, "Эта Google-почта уже привязана к другому человеку")
+
     def insert_user(conn: sqlite3.Connection, data: UserCreate, is_admin: bool) -> sqlite3.Row:
+        google_email = data.google_email or None
+        if google_email:
+            ensure_google_email_free(conn, google_email, None)
         try:
             cur = conn.execute(
-                """INSERT INTO users (username, display_name, password_hash, color, is_admin)
-                   VALUES (?, ?, ?, ?, ?)""",
+                """INSERT INTO users (username, display_name, password_hash, color, is_admin, google_email)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
                 (data.username, data.display_name, hash_password(data.password),
-                 data.color, int(is_admin)),
+                 data.color, int(is_admin), google_email),
             )
         except sqlite3.IntegrityError:
             raise HTTPException(409, "Такой логин уже занят")
@@ -419,7 +463,7 @@ def create_app(db_path: Optional[str] = None, notifier=None) -> FastAPI:
     @app.get("/api/setup")
     def setup_status(conn: sqlite3.Connection = Conn):
         count = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
-        return {"needs_setup": count == 0}
+        return {"needs_setup": count == 0, "google": google_enabled, "password_login": password_login}
 
     @app.post("/api/setup", status_code=201)
     def setup(data: UserCreate, response: Response, conn: sqlite3.Connection = Conn):
@@ -430,15 +474,92 @@ def create_app(db_path: Optional[str] = None, notifier=None) -> FastAPI:
         return user_out(user)
 
     @app.post("/api/login")
-    def login(data: LoginIn, response: Response, conn: sqlite3.Connection = Conn):
-        user = conn.execute(
-            "SELECT * FROM users WHERE username = ?", (data.username.strip(),)
-        ).fetchone()
-        if user is None or not verify_password(data.password, user["password_hash"]):
+    def login(data: LoginIn, request: Request, response: Response, conn: sqlite3.Connection = Conn):
+        if not password_login:
+            raise HTTPException(403, "Вход по паролю отключён. Войдите через Google.")
+        username = data.username.strip()
+        account_key = f"user:{username.lower()}"
+        ip_key = f"ip:{request.client.host if request.client else '-'}"
+        if account_limiter.blocked(account_key) or ip_limiter.blocked(ip_key):
+            raise HTTPException(429, "Слишком много неудачных попыток. Попробуйте через 15 минут.")
+        user = conn.execute("SELECT * FROM users WHERE username = ?", (username,)).fetchone()
+        # Пароль проверяется и для несуществующего логина, чтобы время ответа не выдавало,
+        # какие логины есть.
+        correct = verify_password(data.password, user["password_hash"] if user else DECOY_PASSWORD_HASH)
+        if user is None or not correct:
+            account_limiter.fail(account_key)
+            ip_limiter.fail(ip_key)
             raise HTTPException(401, "Неверный логин или пароль")
+        account_limiter.reset(account_key)
         conn.execute("DELETE FROM sessions WHERE expires_at <= ?", (now_iso(),))
         start_session(conn, response, user["id"])
         return user_out(user)
+
+    # --- вход через Google ---
+
+    def google_failed(reason: str) -> RedirectResponse:
+        response = RedirectResponse(f"/?login_error={reason}", status_code=303)
+        response.delete_cookie(OAUTH_COOKIE, path=OAUTH_COOKIE_PATH)
+        return response
+
+    @app.get("/api/auth/google/start", include_in_schema=False)
+    def google_start(conn: sqlite3.Connection = Conn):
+        if not google_enabled:
+            raise HTTPException(404, "Вход через Google не настроен")
+        state, nonce = new_token(), new_token()
+        verifier, challenge = google.pkce_pair()
+        expires = datetime.now(timezone.utc) + timedelta(minutes=OAUTH_STATE_MINUTES)
+        conn.execute("DELETE FROM oauth_states WHERE expires_at <= ?", (now_iso(),))
+        conn.execute(
+            "INSERT INTO oauth_states (state, nonce, verifier, expires_at) VALUES (?, ?, ?, ?)",
+            (state, nonce, verifier, expires.strftime("%Y-%m-%d %H:%M:%S")),
+        )
+        response = RedirectResponse(
+            google.auth_url(google_client_id, google_redirect_uri, state, nonce, challenge), status_code=303
+        )
+        # state привязан к браузеру: чужую ссылку с чужим state подсунуть не выйдет.
+        response.set_cookie(
+            OAUTH_COOKIE, state, max_age=OAUTH_STATE_MINUTES * 60, path=OAUTH_COOKIE_PATH,
+            httponly=True, samesite="lax", secure=cookie_secure,
+        )
+        return response
+
+    @app.get("/api/auth/google/callback", include_in_schema=False)
+    def google_callback(request: Request, state: str = "", code: str = "", error: str = "",
+                        conn: sqlite3.Connection = Conn):
+        if not google_enabled:
+            raise HTTPException(404, "Вход через Google не настроен")
+        row = conn.execute("SELECT * FROM oauth_states WHERE state = ?", (state,)).fetchone() if state else None
+        if row:
+            conn.execute("DELETE FROM oauth_states WHERE state = ?", (state,))
+        if error:
+            return google_failed("cancelled")
+        cookie_state = request.cookies.get(OAUTH_COOKIE, "")
+        if (row is None or not cookie_state or not hmac.compare_digest(cookie_state, state)
+                or row["expires_at"] <= now_iso()):
+            return google_failed("state")
+        try:
+            tokens = google.exchange_code(
+                code, row["verifier"], google_redirect_uri, google_client_id, google_client_secret
+            )
+            claims = google.verify_id_token(tokens.get("id_token", ""), google_client_id, row["nonce"])
+        except google.GoogleAuthError:
+            return google_failed("token")
+
+        user = conn.execute("SELECT * FROM users WHERE google_sub = ?", (claims["sub"],)).fetchone()
+        if user is None:
+            user = conn.execute(
+                "SELECT * FROM users WHERE google_email = ?", (claims["email"].lower(),)
+            ).fetchone()
+        if user is None:
+            return google_failed("not_allowed")
+        if user["google_sub"] != claims["sub"]:
+            conn.execute("UPDATE users SET google_sub = ? WHERE id = ?", (claims["sub"], user["id"]))
+
+        response = RedirectResponse("/", status_code=303)
+        response.delete_cookie(OAUTH_COOKIE, path=OAUTH_COOKIE_PATH)
+        start_session(conn, response, user["id"])
+        return response
 
     @app.post("/api/logout", status_code=204)
     def logout(request: Request, response: Response, conn: sqlite3.Connection = Conn):
@@ -501,6 +622,16 @@ def create_app(db_path: Optional[str] = None, notifier=None) -> FastAPI:
             changes["is_admin"] = int(changes["is_admin"])
         if "password" in changes:
             changes["password_hash"] = hash_password(changes.pop("password"))
+        if "google_email" in changes:
+            # Почту назначает только администратор: иначе можно привязать к себе чужой адрес.
+            if not user["is_admin"]:
+                raise HTTPException(403, "Google-почту назначает администратор")
+            email = changes["google_email"] or None
+            if email:
+                ensure_google_email_free(conn, email, user_id)
+            changes["google_email"] = email
+            if email != target["google_email"]:
+                changes["google_sub"] = None
         if changes:
             cols = ", ".join(f"{k} = ?" for k in changes)
             conn.execute(f"UPDATE users SET {cols} WHERE id = ?", (*changes.values(), user_id))

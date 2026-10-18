@@ -58,6 +58,14 @@ spec:
               value: {{ .Values.config.telegramDigestHour | quote }}
             - name: TZ
               value: {{ .Values.config.timezone | quote }}
+            - name: TODO_PASSWORD_LOGIN
+              value: {{ .Values.config.passwordLogin | quote }}
+            - name: FORWARDED_ALLOW_IPS
+              value: {{ .Values.config.trustedProxies | quote }}
+            {{- with .Values.config.googleClientId }}
+            - name: GOOGLE_CLIENT_ID
+              value: {{ . | quote }}
+            {{- end }}
             {{- with include "to-do-board.publicUrl" . }}
             - name: TODO_PUBLIC_URL
               value: {{ . | quote }}

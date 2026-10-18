@@ -14,3 +14,12 @@ Ingress выключен. Доступ через проброс порта:
 Секреты берутся из Vault: {{ .Values.vault.secretPath }}
 Ключи: {{ values .Values.vault.env | sortAlpha | join ", " }}
 {{- end }}
+{{- if and (eq .Values.config.trustedProxies "*") (not .Values.networkPolicy.enabled) }}
+
+ВНИМАНИЕ: config.trustedProxies="*" при выключенной networkPolicy — любой клиент
+может подделать свой адрес и обойти лимит попыток входа по IP.
+{{- end }}
+{{- if and .Values.config.googleClientId (not (hasKey .Values.vault.env "GOOGLE_CLIENT_SECRET")) }}
+
+ВНИМАНИЕ: googleClientId задан, но GOOGLE_CLIENT_SECRET нет в vault.env — вход через Google не включится.
+{{- end }}

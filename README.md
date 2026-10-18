@@ -29,7 +29,32 @@ cp .env.example .env
 | `PORT` | `8000` | порт |
 | `TELEGRAM_BOT_TOKEN` | — | токен бота; без него уведомления выключены |
 | `TELEGRAM_DIGEST_HOUR` | `9` | час утренней сводки (по времени сервера) |
-| `TODO_PUBLIC_URL` | — | адрес доски; если задан, ссылка на неё добавляется в сообщения |
+| `TODO_PUBLIC_URL` | — | адрес доски: ссылки в сообщениях и возврат после входа через Google |
+| `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | — | OAuth-клиент Google; без них вход через Google выключен |
+| `TODO_PASSWORD_LOGIN` | `true` | вход по паролю |
+| `FORWARDED_ALLOW_IPS` | `127.0.0.1` | чьим заголовкам `X-Forwarded-For` верить |
+
+## Вход через Google
+
+Вход через Google дополняет вход по паролю. Войти может только тот, кого администратор уже завёл в «Люди» и кому указал Google-почту. Сам по себе никто не зарегистрируется. При первом входе запоминается постоянный идентификатор Google-аккаунта, поэтому вход продолжит работать, даже если человек потом сменит адрес в Google.
+
+Настройка:
+
+1. В [Google Cloud Console](https://console.cloud.google.com/) откройте «APIs & Services» → «OAuth consent screen». Тип — External, название — «Наш дом». Хватит базовых разрешений `openid`, `email`, `profile`, для них проверка приложения в Google не нужна. Затем нажмите «Publish app». Если оставить режим Testing, войти смогут только адреса из списка тестовых пользователей.
+2. «Credentials» → «Create credentials» → «OAuth client ID» → тип «Web application». В «Authorized redirect URIs» добавьте адрес точно в таком виде, без слэша на конце:
+   ```
+   https://todo.geracorp.org/api/auth/google/callback
+   ```
+3. Client ID — не секрет, он задаётся в `config.googleClientId`. Client secret положите в Vault и добавьте в `vault.env`:
+   ```bash
+   vault kv patch secret/to-do-board GOOGLE_CLIENT_SECRET=...
+   ```
+4. В «Люди» администратор указывает каждому его Google-почту.
+5. Когда Google привяжут все, вход по паролю можно выключить: `config.passwordLogin: false`. Первого администратора по-прежнему создают паролем.
+
+Для локального запуска задайте в `.env` переменные `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` и `TODO_PUBLIC_URL=http://localhost:8000`, а в Google Console добавьте второй redirect URI: `http://localhost:8000/api/auth/google/callback`.
+
+Вход по паролю защищён от перебора. После 10 неудачных попыток на один логин или 30 с одного адреса вход блокируется на 15 минут. Ответ для несуществующего логина приходит так же долго, как для настоящего, поэтому перебором нельзя выяснить, какие логины есть.
 
 ## Уведомления в Telegram
 

@@ -78,6 +78,21 @@ MIGRATIONS = [
     """
     ALTER TABLE users ADD COLUMN theme TEXT NOT NULL DEFAULT 'auto';
     """,
+    # 4: вход через Google. Почту назначает администратор; при первом входе
+    # запоминается постоянный идентификатор аккаунта (sub).
+    """
+    ALTER TABLE users ADD COLUMN google_email TEXT;
+    ALTER TABLE users ADD COLUMN google_sub TEXT;
+    CREATE UNIQUE INDEX idx_users_google_email ON users(google_email) WHERE google_email IS NOT NULL;
+    CREATE UNIQUE INDEX idx_users_google_sub ON users(google_sub) WHERE google_sub IS NOT NULL;
+
+    CREATE TABLE oauth_states (
+        state      TEXT PRIMARY KEY,
+        nonce      TEXT NOT NULL,
+        verifier   TEXT NOT NULL,
+        expires_at TEXT NOT NULL
+    );
+    """,
 ]
 
 

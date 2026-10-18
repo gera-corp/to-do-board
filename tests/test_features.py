@@ -42,7 +42,7 @@ def test_migrations_upgrade_v1_database(tmp_path):
     conn.close()
 
     client = TestClient(create_app(path))
-    assert client.get("/api/setup").json() == {"needs_setup": False}
+    assert client.get("/api/setup").json()["needs_setup"] is False
     conn = connect(path)
     assert conn.execute("SELECT points FROM tasks").fetchone()[0] == 1
     assert conn.execute("PRAGMA user_version").fetchone()[0] == len(MIGRATIONS)

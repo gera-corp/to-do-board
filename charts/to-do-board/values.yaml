@@ -54,6 +54,15 @@ config:
   sqliteJournalMode: DELETE
   # Отдавать cookie сессии только по HTTPS. Отключайте, только если доска без TLS.
   cookieSecure: true
+  # Вход по паролю. Можно выключить, когда все привязали Google.
+  passwordLogin: true
+  # Client ID OAuth-клиента Google (не секрет). Пусто — вход через Google выключен.
+  # Client secret передаётся через vault.env как GOOGLE_CLIENT_SECRET.
+  googleClientId: ""
+  # Чьим заголовкам X-Forwarded-For верить при определении адреса посетителя
+  # (нужно для лимита попыток входа). "*" безопасно, пока networkPolicy пускает
+  # к поду только ingress-контроллер.
+  trustedProxies: "*"
 
 # Дополнительные переменные окружения (список в формате Kubernetes).
 extraEnv: []
@@ -63,7 +72,9 @@ vault:
   enabled: true
   # Путь к секрету в KV v2 (с /data/ в пути).
   secretPath: secret/data/to-do-board
-  # Переменная окружения -> ключ внутри секрета.
+  # Переменная окружения -> ключ внутри секрета. Каждый ключ должен существовать
+  # в Vault, иначе под не запустится. Для входа через Google добавьте
+  # GOOGLE_CLIENT_SECRET: GOOGLE_CLIENT_SECRET.
   env:
     TELEGRAM_BOT_TOKEN: TELEGRAM_BOT_TOKEN
   # Пустые значения — используются настройки по умолчанию самого webhook.

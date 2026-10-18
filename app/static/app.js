@@ -82,7 +82,11 @@ async function api(method, path, body) {
   // Ответ из кеша service worker'а помечен X-Offline: сеть недоступна.
   setOffline(res.headers.get("X-Offline") === "1");
   if (res.status === 401 && path !== "/api/login") {
-    showAuth(false);
+    // Сессия кончилась посреди работы. При старте экран входа покажет start().
+    if (state.me) {
+      state.me = null;
+      showAuth();
+    }
     throw new ApiError("Нужно войти");
   }
   if (!res.ok) {
@@ -123,19 +127,43 @@ function utcToLocal(s) {
 
 let setupMode = false;
 
-async function showAuth(needsSetup) {
-  setupMode = needsSetup;
+const LOGIN_ERRORS = {
+  not_allowed: "Этот Google-аккаунт не допущен к доске. Попросите администратора указать вашу почту в «Люди».",
+  state: "Вход через Google прервался. Попробуйте ещё раз.",
+  token: "Google не подтвердил вход. Попробуйте ещё раз.",
+  cancelled: "Вход через Google отменён.",
+};
+
+async function showAuth() {
   clearSavedData();
   $("#app").hidden = true;
   $("#auth").hidden = false;
-  $("#auth-name-field").hidden = !needsSetup;
-  $("#auth-form").display_name.required = needsSetup;
-  $("#auth-form").password.autocomplete = needsSetup ? "new-password" : "current-password";
-  $("#auth-hint").textContent = needsSetup
+  let options = { needs_setup: false, google: false, password_login: true };
+  try {
+    options = await api("GET", "/api/setup");
+  } catch {}
+  setupMode = options.needs_setup;
+  // Первого администратора создают паролем, даже если потом пароли выключат.
+  const withPassword = setupMode || options.password_login;
+  const withGoogle = !setupMode && options.google;
+  const f = $("#auth-form");
+  $("#password-fields").hidden = !withPassword;
+  $("#google-login").hidden = !withGoogle;
+  $("#auth-or").hidden = !(withGoogle && withPassword);
+  $("#auth-name-field").hidden = !setupMode;
+  f.display_name.required = setupMode;
+  f.password.autocomplete = setupMode ? "new-password" : "current-password";
+  $("#auth-hint").textContent = setupMode
     ? "Создайте первого пользователя — он станет администратором и сможет добавить остальных."
     : "Войдите, чтобы увидеть доску.";
-  $("#auth-submit").textContent = needsSetup ? "Создать и войти" : "Войти";
-  $("#auth-form").username.focus();
+  $("#auth-submit").textContent = setupMode ? "Создать и войти" : "Войти";
+
+  const loginError = new URLSearchParams(location.search).get("login_error");
+  if (loginError) {
+    $("#auth-error").textContent = LOGIN_ERRORS[loginError] || "Не удалось войти через Google.";
+    history.replaceState(null, "", "/");
+  }
+  if (withPassword) f.username.focus();
 }
 
 $("#auth-form").addEventListener("submit", async (e) => {
@@ -162,7 +190,7 @@ $("#auth-form").addEventListener("submit", async (e) => {
 $("#logout").addEventListener("click", async () => {
   await api("POST", "/api/logout");
   state.me = null;
-  showAuth(false);
+  showAuth();
 });
 
 // ---------- загрузка ----------
@@ -194,12 +222,11 @@ async function start() {
     state.me = await api("GET", "/api/me");
   } catch {
     if (state.offline) {
-      showAuth(false);
+      await showAuth();
       $("#auth-error").textContent = "Нет связи с сервером. Войти можно будет, когда появится интернет.";
       return;
     }
-    const { needs_setup } = await api("GET", "/api/setup");
-    return showAuth(needs_setup);
+    return showAuth();
   }
   $("#auth").hidden = true;
   $("#app").hidden = false;
@@ -867,6 +894,7 @@ function renderPeopleList() {
       const canEdit = isAdmin || u.id === state.me.id;
       const meta = [`В работе: ${s.open}`, `сделано за неделю: ${s.done_week}`];
       if (state.config.telegram && u.telegram_linked) meta.push("Telegram подключён");
+      if (isAdmin && u.google_email) meta.push(`Google: ${u.google_email}`);
       return h("li", {},
         magnet(u, "lg"),
         h("div", { class: "who" },
@@ -895,6 +923,7 @@ function resetUserForm() {
   $("#user-cancel").hidden = true;
   $("#user-username-field").hidden = false;
   $("#user-admin-field").hidden = !isAdmin;
+  $("#user-google-field").hidden = !isAdmin;
   userForm.username.required = true;
   userForm.password.required = true;
   userForm.password.placeholder = "";
@@ -910,12 +939,15 @@ function editUser(u) {
   $("#user-cancel").hidden = false;
   $("#user-username-field").hidden = true;
   $("#user-admin-field").hidden = !state.me.is_admin || u.id === state.me.id;
+  // Google-почту назначает только администратор, в том числе себе.
+  $("#user-google-field").hidden = !state.me.is_admin;
   userForm.username.required = false;
   userForm.password.required = false;
   userForm.password.value = "";
   userForm.password.placeholder = "Оставьте пустым, чтобы не менять";
   userForm.display_name.value = u.display_name;
   userForm.is_admin.checked = u.is_admin;
+  userForm.google_email.value = u.google_email ?? "";
   pickedColor = u.color;
   $("#user-error").textContent = "";
   renderSwatches();
@@ -942,6 +974,7 @@ userForm.addEventListener("submit", async (e) => {
       const body = { display_name: f.display_name.value.trim(), color: pickedColor };
       if (f.password.value) body.password = f.password.value;
       if (state.me.is_admin && u.id !== state.me.id) body.is_admin = f.is_admin.checked;
+      if (state.me.is_admin) body.google_email = f.google_email.value.trim();
       await api("PATCH", `/api/users/${u.id}`, body);
     } else {
       await api("POST", "/api/users", {
@@ -950,6 +983,7 @@ userForm.addEventListener("submit", async (e) => {
         password: f.password.value,
         color: pickedColor,
         is_admin: f.is_admin.checked,
+        google_email: f.google_email.value.trim() || null,
       });
     }
     await loadAll();
