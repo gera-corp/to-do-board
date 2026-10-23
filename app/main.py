@@ -38,7 +38,10 @@ Color = Field(default="#2F5BD3", pattern=r"^#[0-9A-Fa-f]{6}$")
 Points = Field(default=1, ge=0, le=100)
 
 # Поля задачи, изменения которых попадают в историю как «edited».
-EDITABLE_FIELDS = ("title", "description", "priority", "category", "due_date", "recurrence", "points")
+EDITABLE_FIELDS = ("title", "description", "priority", "category", "due_date", "recurrence", "points",
+                   "parent_id")
+# Как связь выглядит со стороны второй задачи.
+INVERSE_LINK = {"blocks": "blocked_by", "blocked_by": "blocks", "relates": "relates"}
 
 
 # ---------- схемы ----------
@@ -91,6 +94,7 @@ class TaskCreate(BaseModel):
     recurrence: Recurrence = "none"
     points: int = Points
     checklist: list[str] = Field(default_factory=list, max_length=100)
+    parent_id: Optional[int] = None
 
     @field_validator("checklist")
     @classmethod
@@ -108,6 +112,13 @@ class TaskUpdate(BaseModel):
     due_date: Optional[date] = None
     recurrence: Optional[Recurrence] = None
     points: Optional[int] = Field(default=None, ge=0, le=100)
+    parent_id: Optional[int] = None
+
+
+class LinkIn(BaseModel):
+    # С точки зрения задачи, к которой добавляется связь.
+    kind: Literal["blocks", "blocked_by", "relates"]
+    task_id: int
 
 
 class MoveIn(BaseModel):
@@ -181,7 +192,51 @@ def tasks_out(conn: sqlite3.Connection, rows: list[sqlite3.Row]) -> list[dict]:
     ).fetchall()
     for i in items:
         by_id[i["task_id"]]["checklist"].append(item_out(i))
+    for t in tasks:
+        t["links"] = []
+    links = conn.execute(
+        f"SELECT * FROM task_links WHERE from_id IN ({marks}) OR to_id IN ({marks}) ORDER BY id",
+        (*by_id, *by_id),
+    ).fetchall()
+    for link in links:
+        if link["from_id"] in by_id:
+            by_id[link["from_id"]]["links"].append(
+                {"id": link["id"], "type": link["kind"], "task_id": link["to_id"]})
+        if link["to_id"] in by_id:
+            by_id[link["to_id"]]["links"].append(
+                {"id": link["id"], "type": INVERSE_LINK[link["kind"]], "task_id": link["from_id"]})
     return tasks
+
+
+def validate_parent(conn: sqlite3.Connection, task_id: Optional[int], parent_id: Optional[int]) -> None:
+    """Подзадачи — ровно один уровень: у подзадачи нет своих подзадач."""
+    if parent_id is None:
+        return
+    if parent_id == task_id:
+        raise HTTPException(400, "Задача не может быть подзадачей самой себя")
+    parent = conn.execute("SELECT parent_id FROM tasks WHERE id = ?", (parent_id,)).fetchone()
+    if parent is None:
+        raise HTTPException(400, "Родительской задачи нет")
+    if parent["parent_id"] is not None:
+        raise HTTPException(400, "Подзадачи бывают только одного уровня: выбрана сама подзадача")
+    if task_id is not None and conn.execute(
+        "SELECT 1 FROM tasks WHERE parent_id = ? LIMIT 1", (task_id,)
+    ).fetchone():
+        raise HTTPException(400, "У задачи есть свои подзадачи, её нельзя сделать подзадачей")
+
+
+def blocking_creates_cycle(conn: sqlite3.Connection, blocker: int, blocked: int) -> bool:
+    """Добавление «blocker блокирует blocked» замкнёт цикл, если blocked уже (через цепочку) блокирует blocker."""
+    seen, frontier = {blocked}, [blocked]
+    while frontier:
+        current = frontier.pop()
+        if current == blocker:
+            return True
+        for row in conn.execute("SELECT to_id FROM task_links WHERE kind = 'blocks' AND from_id = ?", (current,)):
+            if row["to_id"] not in seen:
+                seen.add(row["to_id"])
+                frontier.append(row["to_id"])
+    return False
 
 
 def get_task_row(conn: sqlite3.Connection, task_id: int) -> sqlite3.Row:
@@ -296,8 +351,26 @@ def change_status(ctx: Ctx, task_id: int, old: str, new: str) -> None:
         text += f", +{pts} {plural(pts, 'очко', 'очка', 'очков')}"
     ctx.notify([task["creator_id"], task["assignee_id"]], f"{text}\nОтметил(а): {ctx.actor}")
 
+    notify_unblocked(ctx, task)
     if task["recurrence"] != "none":
         spawn_next(ctx, task)
+
+
+def notify_unblocked(ctx: Ctx, done_task: sqlite3.Row) -> None:
+    """Задачи, которые ждали только эту, можно начинать — говорим их исполнителям."""
+    waiting = ctx.conn.execute(
+        """SELECT t.* FROM task_links l JOIN tasks t ON t.id = l.to_id
+           WHERE l.kind = 'blocks' AND l.from_id = ? AND t.status != 'done'""",
+        (done_task["id"],),
+    ).fetchall()
+    for task in waiting:
+        still_blocked = ctx.conn.execute(
+            """SELECT 1 FROM task_links l JOIN tasks b ON b.id = l.from_id
+               WHERE l.kind = 'blocks' AND l.to_id = ? AND b.status != 'done' LIMIT 1""",
+            (task["id"],),
+        ).fetchone()
+        if not still_blocked and task["assignee_id"]:
+            ctx.notify([task["assignee_id"]], f"🔓 Можно начинать: {quoted(task)}\nГотово: {quoted(done_task)}")
 
 
 def spawn_next(ctx: Ctx, task: sqlite3.Row) -> None:
@@ -312,11 +385,11 @@ def spawn_next(ctx: Ctx, task: sqlite3.Row) -> None:
     conn.execute("UPDATE tasks SET recurrence = 'none' WHERE id = ?", (task["id"],))
     cur = conn.execute(
         """INSERT INTO tasks (title, description, status, priority, category, assignee_id,
-                              creator_id, due_date, recurrence, points, position)
-           VALUES (?, ?, 'todo', ?, ?, ?, ?, ?, ?, ?, ?)""",
+                              creator_id, due_date, recurrence, points, position, parent_id)
+           VALUES (?, ?, 'todo', ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (task["title"], task["description"], task["priority"], task["category"],
          task["assignee_id"], task["creator_id"], due.isoformat(), task["recurrence"],
-         task["points"], next_position(conn, "tasks", "status", "todo")),
+         task["points"], next_position(conn, "tasks", "status", "todo"), task["parent_id"]),
     )
     items = conn.execute(
         "SELECT text FROM checklist_items WHERE task_id = ? ORDER BY position, id", (task["id"],)
@@ -674,15 +747,17 @@ def create_app(db_path: Optional[str] = None, notifier=None) -> FastAPI:
     def create_task(data: TaskCreate, ctx: Ctx = Depends(get_ctx)):
         conn = ctx.conn
         ensure_user_exists(conn, data.assignee_id)
+        validate_parent(conn, None, data.parent_id)
         cur = conn.execute(
             """INSERT INTO tasks (title, description, status, priority, category, assignee_id,
-                                  creator_id, due_date, recurrence, points, position, completed_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                                  creator_id, due_date, recurrence, points, position, completed_at,
+                                  parent_id)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (data.title.strip(), data.description, data.status, data.priority,
              data.category.strip(), data.assignee_id, ctx.user["id"],
              data.due_date.isoformat() if data.due_date else None, data.recurrence, data.points,
              next_position(conn, "tasks", "status", data.status),
-             now_iso() if data.status == "done" else None),
+             now_iso() if data.status == "done" else None, data.parent_id),
         )
         task_id = cur.lastrowid
         add_checklist(conn, task_id, data.checklist)
@@ -709,6 +784,8 @@ def create_app(db_path: Optional[str] = None, notifier=None) -> FastAPI:
                 changes[key] = changes[key].strip()
         # В базу и историю попадает только то, что действительно поменялось.
         changes = {k: v for k, v in changes.items() if task[k] != v}
+        if "parent_id" in changes:
+            validate_parent(conn, task_id, changes["parent_id"])
 
         new_status = changes.pop("status", task["status"])
         if changes:
@@ -749,6 +826,43 @@ def create_app(db_path: Optional[str] = None, notifier=None) -> FastAPI:
     def delete_task(task_id: int, ctx: Ctx = Depends(get_ctx)):
         if ctx.conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,)).rowcount == 0:
             raise HTTPException(404, "Задача не найдена")
+
+    # --- связи между задачами ---
+
+    @app.post("/api/tasks/{task_id}/links", status_code=201)
+    def add_link(task_id: int, data: LinkIn, ctx: Ctx = Depends(get_ctx)):
+        conn = ctx.conn
+        get_task_row(conn, task_id)
+        if data.task_id == task_id:
+            raise HTTPException(400, "Задачу нельзя связать с самой собой")
+        if conn.execute("SELECT 1 FROM tasks WHERE id = ?", (data.task_id,)).fetchone() is None:
+            raise HTTPException(400, "Такой задачи нет")
+
+        if data.kind == "relates":
+            kind, frm, to = "relates", min(task_id, data.task_id), max(task_id, data.task_id)
+        elif data.kind == "blocks":
+            kind, frm, to = "blocks", task_id, data.task_id
+        else:
+            kind, frm, to = "blocks", data.task_id, task_id
+        if kind == "blocks" and blocking_creates_cycle(conn, frm, to):
+            raise HTTPException(400, "Получится цикл: задачи будут ждать друг друга")
+        try:
+            conn.execute("INSERT INTO task_links (kind, from_id, to_id) VALUES (?, ?, ?)", (kind, frm, to))
+        except sqlite3.IntegrityError:
+            raise HTTPException(409, "Такая связь уже есть")
+
+        ctx.log(task_id, "linked", type=data.kind, other=data.task_id)
+        ctx.log(data.task_id, "linked", type=INVERSE_LINK[data.kind], other=task_id)
+        return task_full(conn, task_id)
+
+    @app.delete("/api/links/{link_id}", status_code=204)
+    def delete_link(link_id: int, ctx: Ctx = Depends(get_ctx)):
+        link = ctx.conn.execute("SELECT * FROM task_links WHERE id = ?", (link_id,)).fetchone()
+        if link is None:
+            raise HTTPException(404, "Связь не найдена")
+        ctx.conn.execute("DELETE FROM task_links WHERE id = ?", (link_id,))
+        ctx.log(link["from_id"], "unlinked", type=link["kind"], other=link["to_id"])
+        ctx.log(link["to_id"], "unlinked", type=INVERSE_LINK[link["kind"]], other=link["from_id"])
 
     # --- чек-листы ---
 

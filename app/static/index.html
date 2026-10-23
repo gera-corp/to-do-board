@@ -91,7 +91,34 @@
           </div>
         </section>
 
+        <section class="relations" id="subtasks-section" aria-labelledby="subtasks-title" hidden>
+          <div class="checklist-head">
+            <h3 id="subtasks-title">Подзадачи</h3>
+            <span class="muted small" id="subtasks-progress"></span>
+          </div>
+          <ul class="rel-list" id="subtasks-list"></ul>
+          <div class="checklist-add">
+            <input id="subtask-input" maxlength="200" placeholder="Новая подзадача" aria-label="Новая подзадача" autocomplete="off">
+            <button type="button" class="btn ghost" id="subtask-add">Добавить</button>
+          </div>
+        </section>
+
+        <section class="relations" id="links-section" aria-labelledby="links-title" hidden>
+          <h3 id="links-title">Связи</h3>
+          <ul class="rel-list" id="links-list"></ul>
+          <div class="link-add">
+            <select id="link-kind" aria-label="Вид связи">
+              <option value="blocked_by">Ждёт</option>
+              <option value="blocks">Блокирует</option>
+              <option value="relates">Связана с</option>
+            </select>
+            <select id="link-target" aria-label="Задача для связи"></select>
+            <button type="button" class="btn ghost" id="link-add">Связать</button>
+          </div>
+        </section>
+
         <div class="grid2">
+          <label class="span2">Входит в задачу <select name="parent_id"></select></label>
           <label>Кто делает <select name="assignee_id"></select></label>
           <label>Колонка <select name="status"></select></label>
           <label>Срок <input name="due_date" type="date"></label>

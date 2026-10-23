@@ -93,6 +93,24 @@ MIGRATIONS = [
         expires_at TEXT NOT NULL
     );
     """,
+    # 5: подзадачи (один уровень) и связи между задачами
+    """
+    ALTER TABLE tasks ADD COLUMN parent_id INTEGER REFERENCES tasks(id) ON DELETE SET NULL;
+    CREATE INDEX idx_tasks_parent ON tasks(parent_id);
+
+    -- blocks: from_id блокирует to_id (to_id ждёт from_id).
+    -- relates: просто связь; хранится с from_id < to_id, чтобы не было дублей.
+    CREATE TABLE task_links (
+        id         INTEGER PRIMARY KEY,
+        kind       TEXT NOT NULL CHECK (kind IN ('blocks', 'relates')),
+        from_id    INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+        to_id      INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        CHECK (from_id != to_id),
+        UNIQUE (kind, from_id, to_id)
+    );
+    CREATE INDEX idx_links_to ON task_links(to_id);
+    """,
 ]
 
 

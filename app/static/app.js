@@ -11,7 +11,12 @@ const COLORS = ["#2F5BD3", "#E0533D", "#2E9E6A", "#D99A12", "#8A4FD8", "#1F9BB0"
 const RECURRENCE = { daily: "каждый день", weekly: "каждую неделю", monthly: "каждый месяц" };
 const FIELD_NAMES = {
   title: "название", description: "описание", priority: "важность", category: "категорию",
-  due_date: "срок", recurrence: "повтор", points: "очки",
+  due_date: "срок", recurrence: "повтор", points: "очки", parent_id: "родительскую задачу",
+};
+const LINK_TYPES = {
+  blocked_by: { label: "Ждёт", phrase: "ждёт" },
+  blocks: { label: "Блокирует", phrase: "блокирует" },
+  relates: { label: "Связана с", phrase: "связана с" },
 };
 const THEMES = [
   { id: "auto", name: "Как в системе" },
@@ -308,6 +313,38 @@ function matchesFilter(t) {
 
 // ---------- доска ----------
 
+const taskById = (id) => state.tasks.find((t) => t.id === id);
+const STATUS_ORDER = Object.fromEntries(COLUMNS.map((c, i) => [c.id, i]));
+
+function childrenOf(id) {
+  return state.tasks
+    .filter((t) => t.parent_id === id)
+    .sort((a, b) => STATUS_ORDER[a.status] - STATUS_ORDER[b.status] || a.position - b.position);
+}
+
+// Незакрытые задачи, которых эта ждёт.
+function openBlockers(task) {
+  return task.links
+    .filter((l) => l.type === "blocked_by")
+    .map((l) => taskById(l.task_id))
+    .filter((b) => b && b.status !== "done");
+}
+
+// Правила «предупреждать, а не запрещать»: возвращает текст вопроса или null.
+function statusWarning(task, status) {
+  if (!task || status === task.status) return null;
+  const lines = [];
+  if (status === "done") {
+    const open = childrenOf(task.id).filter((c) => c.status !== "done");
+    if (open.length) lines.push(`Не сделаны подзадачи: ${open.map((c) => `«${c.title}»`).join(", ")}.`);
+  }
+  if (status !== "todo") {
+    const blockers = openBlockers(task);
+    if (blockers.length) lines.push(`Задача ждёт: ${blockers.map((b) => `«${b.title}»`).join(", ")}.`);
+  }
+  return lines.length ? `${lines.join("\n")}\n\nВсё равно перенести «${task.title}» в ${COLUMN_TITLE[status]}?` : null;
+}
+
 function columnTasks(status) {
   return state.tasks
     .filter((t) => t.status === status)
@@ -360,6 +397,18 @@ function renderCard(t) {
     meta.push(h("span", { class: `tag ${ready === t.checklist.length ? "complete" : ""}`, title: "Чек-лист" },
       `☑ ${ready}/${t.checklist.length}`));
   }
+  const children = childrenOf(t.id);
+  if (children.length) {
+    const ready = children.filter((c) => c.status === "done").length;
+    meta.push(h("span", { class: `tag ${ready === children.length ? "complete" : ""}`, title: "Подзадачи" },
+      `▤ ${ready}/${children.length}`));
+  }
+  const blockers = done ? [] : openBlockers(t);
+  if (blockers.length) {
+    const more = blockers.length > 1 ? ` и ещё ${blockers.length - 1}` : "";
+    meta.push(h("span", { class: "tag wait", title: blockers.map((b) => b.title).join(", ") },
+      `⏳ ждёт: ${blockers[0].title}${more}`));
+  }
   if (t.recurrence !== "none") meta.push(h("span", { class: "tag", title: "Повторяется" }, `↻ ${RECURRENCE[t.recurrence]}`));
   if (t.category) meta.push(h("span", { class: "tag" }, t.category));
   // Очки — последним элементом строки меток: в углу карточки они наезжали на магнит.
@@ -387,6 +436,8 @@ function renderCard(t) {
     },
   },
     magnet(userById(t.assignee_id)),
+    t.parent_id && taskById(t.parent_id)
+      ? h("div", { class: "parent-ref", title: "Входит в задачу" }, `↳ ${taskById(t.parent_id).title}`) : null,
     h("div", { class: "title" }, t.title),
     h("div", { class: "meta" }, meta),
   );
@@ -438,6 +489,11 @@ function wireDropZone(list) {
     }
     state.dragId = null;
     const task = state.tasks.find((t) => t.id === id);
+    const warning = statusWarning(task, status);
+    if (warning && !confirm(warning)) {
+      renderBoard();
+      return;
+    }
     const wasDone = task.status === "done";
     // Оптимистично переставляем локально, потом сверяемся с сервером.
     full.splice(index, 0, id);
@@ -468,7 +524,7 @@ function celebrate(task) {
 const taskDialog = $("#task-dialog");
 const taskForm = $("#task-form");
 
-function openTask(task, status = "todo") {
+function openTask(task, status = "todo", parentId = null) {
   state.editingTask = task;
   $("#task-error").textContent = "";
   $("#task-dialog-title").textContent = task ? "Задача" : "Новая задача";
@@ -486,6 +542,7 @@ function openTask(task, status = "todo") {
   const t = task || {
     title: "", description: "", status, priority: "normal", category: state.filter.category,
     assignee_id: state.filter.assignee ?? state.me.id, due_date: null, recurrence: "none", points: 1,
+    parent_id: parentId,
   };
   taskForm.title.value = t.title;
   taskForm.description.value = t.description;
@@ -497,6 +554,10 @@ function openTask(task, status = "todo") {
   ensurePointsOption(t.points);
   taskForm.points.value = String(t.points);
   taskForm.querySelector(`input[name="priority"][value="${t.priority}"]`).checked = true;
+
+  fillParentSelect(task, t.parent_id ?? null);
+  $("#subtask-input").value = "";
+  renderRelations();
 
   state.draftChecklist = [];
   $("#checklist-input").value = "";
@@ -536,7 +597,11 @@ taskForm.addEventListener("submit", async (e) => {
     recurrence: f.recurrence.value,
     points: Number(f.points.value),
   };
+  // Поле недоступно, если у задачи свои подзадачи: тогда родителя не трогаем.
+  if (!f.parent_id.disabled) body.parent_id = f.parent_id.value ? Number(f.parent_id.value) : null;
   const task = state.editingTask;
+  const warning = statusWarning(task, body.status);
+  if (warning && !confirm(warning)) return;
   try {
     if (task) {
       await api("PATCH", `/api/tasks/${task.id}`, body);
@@ -567,6 +632,141 @@ $("#task-delete").addEventListener("click", async () => {
 });
 
 $("#new-task").addEventListener("click", () => openTask(null));
+
+// ---------- подзадачи и связи ----------
+
+function fillParentSelect(task, parentId) {
+  const select = taskForm.parent_id;
+  const hasChildren = Boolean(task) && childrenOf(task.id).length > 0;
+  // Родителем может быть только самостоятельная задача: подзадачи — один уровень.
+  const candidates = state.tasks
+    .filter((t) => t.parent_id == null && t.id !== task?.id && (t.status !== "done" || t.id === parentId))
+    .sort((a, b) => a.title.localeCompare(b.title, "ru"));
+  select.replaceChildren(
+    h("option", { value: "" }, "Ни в какую, самостоятельная задача"),
+    ...candidates.map((t) => h("option", { value: t.id }, t.title)),
+  );
+  select.value = parentId ?? "";
+  select.disabled = hasChildren;
+  select.title = hasChildren ? "У задачи есть свои подзадачи, поэтому сама она подзадачей быть не может" : "";
+}
+
+// Открыть другую задачу из окна текущей.
+function switchTask(task) {
+  taskDialog.close();
+  openTask(task);
+}
+
+function relRow(task, { before = null, after = null } = {}) {
+  return h("li", { class: task.status === "done" ? "done" : "" },
+    before,
+    h("button", { type: "button", class: "rel-title", onclick: () => switchTask(task) }, task.title),
+    h("span", { class: `status-pill s-${task.status}` }, COLUMN_TITLE[task.status]),
+    magnet(userById(task.assignee_id), "sm"),
+    after,
+  );
+}
+
+function renderRelations() {
+  const task = state.editingTask;
+  const canHaveChildren = Boolean(task) && task.parent_id == null;
+  $("#subtasks-section").hidden = !canHaveChildren;
+  if (canHaveChildren) {
+    const children = childrenOf(task.id);
+    const ready = children.filter((c) => c.status === "done").length;
+    $("#subtasks-progress").textContent = children.length ? `${ready} из ${children.length}` : "";
+    $("#subtasks-list").replaceChildren(...children.map((c) => relRow(c)));
+  }
+
+  $("#links-section").hidden = !task;
+  if (!task) return;
+  const order = ["blocked_by", "blocks", "relates"];
+  const links = [...task.links].sort((a, b) => order.indexOf(a.type) - order.indexOf(b.type));
+  $("#links-list").replaceChildren(
+    ...links.map((l) => {
+      const other = taskById(l.task_id);
+      if (!other) return null;
+      return relRow(other, {
+        before: h("span", { class: `link-type ${l.type}` }, LINK_TYPES[l.type].label),
+        after: h("button", {
+          type: "button", class: "icon-btn", "aria-label": `Убрать связь с «${other.title}»`,
+          onclick: () => removeLink(l.id),
+        }, "×"),
+      });
+    }),
+  );
+  const linked = new Set(task.links.map((l) => l.task_id));
+  const targets = state.tasks
+    .filter((t) => t.id !== task.id && !linked.has(t.id) && !isOldDone(t))
+    .sort((a, b) => STATUS_ORDER[a.status] - STATUS_ORDER[b.status] || a.title.localeCompare(b.title, "ru"));
+  $("#link-target").replaceChildren(
+    h("option", { value: "" }, "Выберите задачу"),
+    ...COLUMNS.map((c) => {
+      const group = targets.filter((t) => t.status === c.id);
+      return group.length ? h("optgroup", { label: c.title }, group.map((t) => h("option", { value: t.id }, t.title))) : null;
+    }),
+  );
+}
+
+// Перечитать доску и обновить открытое окно, не трогая несохранённые поля формы.
+async function refreshEditing() {
+  const id = state.editingTask?.id;
+  await loadAll();
+  const fresh = taskById(id);
+  if (!fresh || !taskDialog.open) return;
+  state.editingTask = fresh;
+  renderRelations();
+  renderChecklist();
+  loadEvents();
+}
+
+async function addSubtask() {
+  const input = $("#subtask-input");
+  const title = input.value.trim();
+  const parent = state.editingTask;
+  if (!title || !parent) return;
+  try {
+    await api("POST", "/api/tasks", {
+      title, parent_id: parent.id, assignee_id: parent.assignee_id, category: parent.category,
+    });
+    input.value = "";
+    await refreshEditing();
+    input.focus();
+  } catch (err) {
+    $("#task-error").textContent = err.message;
+  }
+}
+
+async function addLink() {
+  const task = state.editingTask;
+  const target = $("#link-target").value;
+  if (!task || !target) return;
+  try {
+    await api("POST", `/api/tasks/${task.id}/links`, { kind: $("#link-kind").value, task_id: Number(target) });
+    $("#task-error").textContent = "";
+    await refreshEditing();
+  } catch (err) {
+    $("#task-error").textContent = err.message;
+  }
+}
+
+async function removeLink(linkId) {
+  try {
+    await api("DELETE", `/api/links/${linkId}`);
+    await refreshEditing();
+  } catch (err) {
+    $("#task-error").textContent = err.message;
+  }
+}
+
+$("#subtask-add").addEventListener("click", addSubtask);
+$("#subtask-input").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") {
+    e.preventDefault();
+    addSubtask();
+  }
+});
+$("#link-add").addEventListener("click", addLink);
 
 // ---------- чек-лист ----------
 
@@ -668,6 +868,10 @@ function describeEvent(e) {
       return p.to ? `назначает исполнителем: ${userName(p.to)}` : "снимает исполнителя";
     case "edited":
       return `меняет ${p.fields.map((f) => FIELD_NAMES[f] || f).join(", ")}`;
+    case "linked":
+      return `связывает: ${LINK_TYPES[p.type]?.phrase ?? p.type} «${taskById(p.other)?.title ?? "удалённая задача"}»`;
+    case "unlinked":
+      return `убирает связь: ${LINK_TYPES[p.type]?.phrase ?? p.type} «${taskById(p.other)?.title ?? "удалённая задача"}»`;
     default:
       return e.kind;
   }
