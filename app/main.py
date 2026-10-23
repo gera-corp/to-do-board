@@ -12,12 +12,14 @@ from pathlib import Path
 from typing import Literal, Optional
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
-from fastapi.responses import PlainTextResponse, RedirectResponse
+from fastapi.responses import JSONResponse, PlainTextResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from . import db, google
 from .config import load_env_file
+from .i18n import normalize_lang, points_word, tr
 from .recurrence import next_due
 from .security import DECOY_PASSWORD_HASH, LoginLimiter, hash_password, new_token, verify_password
 from .telegram import NullNotifier, TelegramBot, short_date
@@ -34,6 +36,9 @@ Status = Literal["todo", "in_progress", "review", "done"]
 Priority = Literal["low", "normal", "high"]
 Recurrence = Literal["none", "daily", "weekly", "monthly"]
 Theme = Literal["auto", "light", "dark", "mint", "kraft", "midnight", "contrast"]
+# auto — язык браузера; на сервере не известен, поэтому для уведомлений хранится
+# ещё ui_lang — язык, на котором человек фактически пользуется доской.
+Lang = Literal["auto", "en", "ru"]
 Color = Field(default="#2F5BD3", pattern=r"^#[0-9A-Fa-f]{6}$")
 Points = Field(default=1, ge=0, le=100)
 
@@ -73,6 +78,7 @@ class UserUpdate(BaseModel):
     color: Optional[str] = Field(default=None, pattern=r"^#[0-9A-Fa-f]{6}$")
     is_admin: Optional[bool] = None
     theme: Optional[Theme] = None
+    lang: Optional[Lang] = None
     google_email: Optional[str] = Field(default=None, max_length=254)
 
     _google_email = field_validator("google_email")(normalize_google_email)
@@ -148,13 +154,6 @@ def now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
 
-def plural(n: int, one: str, few: str, many: str) -> str:
-    n = abs(n) % 100
-    if 11 <= n <= 14:
-        return many
-    return {1: one, 2: few, 3: few, 4: few}.get(n % 10, many)
-
-
 def user_out(row: sqlite3.Row) -> dict:
     return {
         "id": row["id"],
@@ -164,6 +163,7 @@ def user_out(row: sqlite3.Row) -> dict:
         "is_admin": bool(row["is_admin"]),
         "telegram_linked": row["telegram_chat_id"] is not None,
         "theme": row["theme"],
+        "lang": row["lang"],
         "google_email": row["google_email"],
     }
 
@@ -305,18 +305,21 @@ class Ctx:
         )
         return cur.lastrowid
 
-    def notify(self, user_ids, text: str) -> None:
-        """Шлёт сообщение указанным людям, кроме того, кто сам совершил действие."""
+    def notify(self, user_ids, render) -> None:
+        """Шлёт сообщение указанным людям, кроме того, кто сам совершил действие.
+
+        render(lang) собирает текст на языке получателя.
+        """
         ids = {u for u in user_ids if u is not None and u != self.user["id"]}
         if not ids or not self.notifier.enabled:
             return
         marks = ",".join("?" * len(ids))
         rows = self.conn.execute(
-            f"SELECT telegram_chat_id FROM users WHERE id IN ({marks}) AND telegram_chat_id IS NOT NULL",
+            f"SELECT telegram_chat_id, ui_lang FROM users WHERE id IN ({marks}) AND telegram_chat_id IS NOT NULL",
             tuple(ids),
         ).fetchall()
         for r in rows:
-            self.notifier.send(r["telegram_chat_id"], text)
+            self.notifier.send(r["telegram_chat_id"], render(r["ui_lang"]))
 
 
 def quoted(task) -> str:
@@ -324,10 +327,13 @@ def quoted(task) -> str:
 
 
 def notify_assigned(ctx: Ctx, task) -> None:
-    text = f"📌 {ctx.actor} поручает вам: {quoted(task)}"
-    if task["due_date"]:
-        text += f"\nСрок: {short_date(task['due_date'])}"
-    ctx.notify([task["assignee_id"]], text)
+    def render(lang: str) -> str:
+        text = tr("📌 {actor} поручает вам: {task}", lang, actor=ctx.actor, task=quoted(task))
+        if task["due_date"]:
+            text += "\n" + tr("Срок: {date}", lang, date=short_date(task["due_date"], lang))
+        return text
+
+    ctx.notify([task["assignee_id"]], render)
 
 
 def change_status(ctx: Ctx, task_id: int, old: str, new: str) -> None:
@@ -341,15 +347,20 @@ def change_status(ctx: Ctx, task_id: int, old: str, new: str) -> None:
     if new != "done":
         conn.execute("UPDATE tasks SET completed_at = NULL WHERE id = ?", (task_id,))
         if new == "review":
-            ctx.notify([task["creator_id"]], f"👀 {ctx.actor} просит проверить: {quoted(task)}")
+            ctx.notify([task["creator_id"]], lambda lang: tr(
+                "👀 {actor} просит проверить: {task}", lang, actor=ctx.actor, task=quoted(task)))
         return
 
     conn.execute("UPDATE tasks SET completed_at = ? WHERE id = ?", (now_iso(), task_id))
-    text = f"✅ Сделано: {quoted(task)}"
-    if task["assignee_id"] and task["points"]:
-        pts = task["points"]
-        text += f", +{pts} {plural(pts, 'очко', 'очка', 'очков')}"
-    ctx.notify([task["creator_id"], task["assignee_id"]], f"{text}\nОтметил(а): {ctx.actor}")
+    pts = task["points"] if task["assignee_id"] else 0
+
+    def render(lang: str) -> str:
+        text = tr("✅ Сделано: {task}", lang, task=quoted(task))
+        if pts:
+            text += tr(", +{n} {points}", lang, n=pts, points=points_word(pts, lang))
+        return text + "\n" + tr("Отметил(а): {actor}", lang, actor=ctx.actor)
+
+    ctx.notify([task["creator_id"], task["assignee_id"]], render)
 
     notify_unblocked(ctx, task)
     if task["recurrence"] != "none":
@@ -370,7 +381,9 @@ def notify_unblocked(ctx: Ctx, done_task: sqlite3.Row) -> None:
             (task["id"],),
         ).fetchone()
         if not still_blocked and task["assignee_id"]:
-            ctx.notify([task["assignee_id"]], f"🔓 Можно начинать: {quoted(task)}\nГотово: {quoted(done_task)}")
+            ctx.notify([task["assignee_id"]], lambda lang, task=task: (
+                tr("🔓 Можно начинать: {task}", lang, task=quoted(task)) + "\n"
+                + tr("Готово: {task}", lang, task=quoted(done_task))))
 
 
 def spawn_next(ctx: Ctx, task: sqlite3.Row) -> None:
@@ -459,6 +472,17 @@ def create_app(db_path: Optional[str] = None, notifier=None) -> FastAPI:
 
     app = FastAPI(title="Домашний канбан", lifespan=lifespan)
 
+    # Ошибки API — на языке интерфейса, который клиент передаёт в Accept-Language.
+    @app.exception_handler(StarletteHTTPException)
+    async def translated_error(request: Request, exc: StarletteHTTPException):
+        lang = normalize_lang(request.headers.get("accept-language"))
+        detail = exc.detail
+        if isinstance(detail, dict) and "msg" in detail:
+            detail = tr(detail["msg"], lang, **detail.get("params", {}))
+        elif isinstance(detail, str):
+            detail = tr(detail, lang)
+        return JSONResponse({"detail": detail}, status_code=exc.status_code, headers=getattr(exc, "headers", None))
+
     def get_conn():
         conn = db.connect(db_path)
         try:
@@ -483,6 +507,11 @@ def create_app(db_path: Optional[str] = None, notifier=None) -> FastAPI:
                 (token, now_iso()),
             ).fetchone()
             if row:
+                # Запоминаем язык, на котором человек сейчас пользуется доской, — на нём
+                # придут уведомления в Telegram.
+                header = request.headers.get("accept-language")
+                if header and normalize_lang(header) != row["ui_lang"]:
+                    conn.execute("UPDATE users SET ui_lang = ? WHERE id = ?", (normalize_lang(header), row["id"]))
                 return row
         raise HTTPException(401, "Нужно войти")
 
@@ -774,7 +803,7 @@ def create_app(db_path: Optional[str] = None, notifier=None) -> FastAPI:
         changes = data.model_dump(exclude_unset=True)
         for required in ("title", "description", "status", "priority", "category", "recurrence", "points"):
             if required in changes and changes[required] is None:
-                raise HTTPException(422, f"Поле {required} не может быть пустым")
+                raise HTTPException(422, {"msg": "Поле {field} не может быть пустым", "params": {"field": required}})
         if "assignee_id" in changes:
             ensure_user_exists(conn, changes["assignee_id"])
         if changes.get("due_date") is not None:
@@ -913,7 +942,8 @@ def create_app(db_path: Optional[str] = None, notifier=None) -> FastAPI:
         event_id = ctx.log(task_id, "comment", text=data.text)
         ctx.notify(
             [task["assignee_id"], task["creator_id"]],
-            f"💬 {ctx.actor} о задаче {quoted(task)}:\n{escape(data.text)}",
+            lambda lang: tr("💬 {actor} о задаче {task}:", lang, actor=ctx.actor, task=quoted(task))
+            + "\n" + escape(data.text),
         )
         return event_out(ctx.conn.execute("SELECT * FROM task_events WHERE id = ?", (event_id,)).fetchone())
 
@@ -968,6 +998,17 @@ def create_app(db_path: Optional[str] = None, notifier=None) -> FastAPI:
     service_worker = (STATIC_DIR / "sw.js").read_text(encoding="utf-8").replace(
         "__VERSION__", static_version(STATIC_DIR)
     )
+
+    # Манифест на языке браузера: под этим именем приложение встанет на главный экран.
+    manifest_template = json.loads((STATIC_DIR / "manifest.webmanifest").read_text(encoding="utf-8"))
+
+    @app.get("/manifest.webmanifest", include_in_schema=False)
+    def manifest(request: Request):
+        data = dict(manifest_template)
+        if normalize_lang(request.headers.get("accept-language")) == "en":
+            data.update(name="Our Home", short_name="Our Home", description="Kanban board for household chores",
+                        lang="en")
+        return JSONResponse(data, media_type="application/manifest+json")
 
     @app.get("/sw.js", include_in_schema=False)
     def sw():

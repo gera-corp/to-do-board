@@ -23,7 +23,11 @@ def test_manifest_and_icons(anon):
     assert r.status_code == 200
     assert r.headers["content-type"].startswith("application/manifest+json")
     m = json.loads(r.text)
-    assert m["start_url"] == "/" and m["display"] == "standalone" and m["lang"] == "ru"
+    assert m["start_url"] == "/" and m["display"] == "standalone"
+    # имя приложения — на языке браузера, по умолчанию английское
+    assert (m["name"], m["lang"]) == ("Our Home", "en")
+    ru = anon.get("/manifest.webmanifest", headers={"Accept-Language": "ru-RU,ru;q=0.9"}).json()
+    assert (ru["name"], ru["lang"]) == ("Наш дом", "ru")
     purposes = set()
     for icon in m["icons"]:
         img = anon.get(icon["src"])

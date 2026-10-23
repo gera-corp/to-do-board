@@ -11,25 +11,27 @@ from datetime import date, datetime, timedelta
 from html import escape
 
 from . import db
+from .i18n import MONTHS, normalize_lang, tr
 
 log = logging.getLogger("telegram")
 
 STATUS_TITLES = {"todo": "To Do", "in_progress": "In Progress", "review": "Review", "done": "Done"}
-HELP = (
-    "Я присылаю уведомления с доски задач.\n\n"
-    "/tasks — мои открытые задачи\n"
-    "/stop — отключить уведомления"
-)
-NOT_LINKED = (
-    "Этот чат не привязан к доске. Откройте доску → «Люди» → свой профиль → "
-    "«Подключить Telegram»."
-)
-MONTHS = ["янв", "фев", "мар", "апр", "мая", "июн", "июл", "авг", "сен", "окт", "ноя", "дек"]
+def help_text(lang: str) -> str:
+    return "\n".join([
+        tr("Я присылаю уведомления с доски задач.", lang),
+        "",
+        tr("/tasks — мои открытые задачи", lang),
+        tr("/stop — отключить уведомления", lang),
+    ])
 
 
-def short_date(iso: str) -> str:
+def not_linked(lang: str) -> str:
+    return tr("Этот чат не привязан к доске. Откройте доску → «Люди» → свой профиль → «Подключить Telegram».", lang)
+
+
+def short_date(iso: str, lang: str = "ru") -> str:
     d = date.fromisoformat(iso)
-    return f"{d.day} {MONTHS[d.month - 1]}"
+    return f"{d.day} {MONTHS[lang][d.month - 1]}"
 
 
 class NullNotifier:
@@ -61,39 +63,43 @@ def handle_update(conn: sqlite3.Connection, update: dict) -> list[tuple[int, str
     cmd = cmd.split("@")[0].lower()
     arg = arg.strip()
     user = conn.execute("SELECT * FROM users WHERE telegram_chat_id = ?", (chat_id,)).fetchone()
+    # Привязанному человеку — на языке доски, остальным — на языке их Telegram.
+    lang = user["ui_lang"] if user else normalize_lang((msg.get("from") or {}).get("language_code"))
 
     if cmd == "/start" and arg:
         target = conn.execute("SELECT * FROM users WHERE telegram_link_code = ?", (arg,)).fetchone()
         if target is None:
-            return [(chat_id, "Ссылка устарела. Получите новую в своём профиле на доске.")]
+            return [(chat_id, tr("Ссылка устарела. Получите новую в своём профиле на доске.", lang))]
         conn.execute("UPDATE users SET telegram_chat_id = NULL WHERE telegram_chat_id = ?", (chat_id,))
         conn.execute(
             "UPDATE users SET telegram_chat_id = ?, telegram_link_code = NULL WHERE id = ?",
             (chat_id, target["id"]),
         )
         conn.commit()
-        return [(chat_id, f"Привет, {escape(target['display_name'])}! Теперь сюда будут приходить "
-                          f"уведомления о ваших задачах.\n\n{HELP}")]
+        lang = target["ui_lang"]
+        greeting = tr("Привет, {name}! Теперь сюда будут приходить уведомления о ваших задачах.", lang,
+                      name=escape(target["display_name"]))
+        return [(chat_id, f"{greeting}\n\n{help_text(lang)}")]
 
     if user is None:
-        return [(chat_id, NOT_LINKED)]
+        return [(chat_id, not_linked(lang))]
     if cmd == "/tasks":
-        return [(chat_id, my_tasks_text(conn, user["id"]))]
+        return [(chat_id, my_tasks_text(conn, user["id"], lang))]
     if cmd == "/stop":
         conn.execute("UPDATE users SET telegram_chat_id = NULL WHERE id = ?", (user["id"],))
         conn.commit()
-        return [(chat_id, "Уведомления отключены. Подключить снова можно в профиле на доске.")]
-    return [(chat_id, HELP)]
+        return [(chat_id, tr("Уведомления отключены. Подключить снова можно в профиле на доске.", lang))]
+    return [(chat_id, help_text(lang))]
 
 
-def task_line(t: sqlite3.Row) -> str:
+def task_line(t: sqlite3.Row, lang: str) -> str:
     line = f"• {escape(t['title'])}"
     if t["due_date"]:
-        line += f" — до {short_date(t['due_date'])}"
+        line += tr(" — до {date}", lang, date=short_date(t["due_date"], lang))
     return line
 
 
-def my_tasks_text(conn: sqlite3.Connection, user_id: int) -> str:
+def my_tasks_text(conn: sqlite3.Connection, user_id: int, lang: str) -> str:
     rows = conn.execute(
         """SELECT * FROM tasks WHERE assignee_id = ? AND status != 'done'
            ORDER BY CASE status WHEN 'in_progress' THEN 0 WHEN 'review' THEN 1 ELSE 2 END,
@@ -101,14 +107,14 @@ def my_tasks_text(conn: sqlite3.Connection, user_id: int) -> str:
         (user_id,),
     ).fetchall()
     if not rows:
-        return "Открытых задач нет. Отдыхайте 🙂"
+        return tr("Открытых задач нет. Отдыхайте 🙂", lang)
     parts, current = [], None
     for t in rows:
         if t["status"] != current:
             current = t["status"]
             parts.append(f"\n<b>{STATUS_TITLES[current]}</b>")
-        parts.append(task_line(t))
-    return "Ваши задачи:" + "\n".join(parts)
+        parts.append(task_line(t, lang))
+    return tr("Ваши задачи:", lang) + "\n".join(parts)
 
 
 def build_digest(conn: sqlite3.Connection, today: date) -> list[tuple[int, str]]:
@@ -116,6 +122,7 @@ def build_digest(conn: sqlite3.Connection, today: date) -> list[tuple[int, str]]
     messages = []
     users = conn.execute("SELECT * FROM users WHERE telegram_chat_id IS NOT NULL").fetchall()
     for u in users:
+        lang = u["ui_lang"]
         rows = conn.execute(
             """SELECT * FROM tasks WHERE assignee_id = ? AND status != 'done'
                AND due_date IS NOT NULL AND due_date <= ? ORDER BY due_date, position""",
@@ -126,11 +133,11 @@ def build_digest(conn: sqlite3.Connection, today: date) -> list[tuple[int, str]]
         tomorrow = [t for t in rows if t["due_date"] > today.isoformat()]
         if not rows:
             continue
-        parts = ["☀️ Доброе утро! Вот что на сегодня."]
+        parts = [tr("☀️ Доброе утро! Вот что на сегодня.", lang)]
         for title, group in (("Сегодня", due_today), ("Просрочено", overdue), ("Завтра", tomorrow)):
             if group:
-                parts.append(f"\n<b>{title}</b>")
-                parts += [task_line(t) for t in group]
+                parts.append(f"\n<b>{tr(title, lang)}</b>")
+                parts += [task_line(t, lang) for t in group]
         messages.append((u["telegram_chat_id"], "\n".join(parts)))
     return messages
 

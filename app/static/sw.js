@@ -11,6 +11,7 @@ const FONTS = "fonts";
 const SHELL_FILES = [
   "/",
   "/style.css",
+  "/i18n.js",
   "/app.js",
   "/manifest.webmanifest",
   "/icons/icon.svg",

@@ -166,19 +166,19 @@ def test_link_and_unlink_telegram(admin, db_path):
     assert admin.get("/api/me").json()["telegram_linked"] is True
     # повторно ссылка не срабатывает
     code_reply = bot(db_path, 777, "/start whatever")
-    assert "устарела" in code_reply[0][1]
+    assert "expired" in code_reply[0][1]
 
     assert admin.delete("/api/me/telegram").status_code == 204
     assert admin.get("/api/me").json()["telegram_linked"] is False
 
 
 def test_bot_commands(admin, db_path):
-    assert "не привязан" in bot(db_path, 1, "/tasks")[0][1]
+    assert "not linked" in bot(db_path, 1, "/tasks")[0][1]
     link_telegram(admin, db_path, 1)
     me = admin.get("/api/me").json()
     make_task(admin, title="Полить <цветы>", assignee_id=me["id"], due_date="2026-12-01")
     [(_, text)] = bot(db_path, 1, "/tasks")
-    assert "Полить &lt;цветы&gt;" in text and "1 дек" in text
+    assert "Полить &lt;цветы&gt;" in text and "1 Dec" in text
 
     bot(db_path, 1, "/stop")
     assert admin.get("/api/me").json()["telegram_linked"] is False
@@ -198,7 +198,7 @@ def test_notifications(app, admin, db_path, notifier):
     assert notifier.sent == []  # о своих действиях не уведомляем
 
     petya_client.post(f"/api/tasks/{task['id']}/move", json={"status": "review", "index": 0})
-    assert notifier.sent[-1][0] == 100 and "провер" in notifier.sent[-1][1]
+    assert notifier.sent[-1][0] == 100 and "review" in notifier.sent[-1][1]
 
     admin.post(f"/api/tasks/{task['id']}/move", json={"status": "done", "index": 0})
     assert notifier.sent[-1][0] == 200 and "+1" in notifier.sent[-1][1]

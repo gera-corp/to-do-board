@@ -8,7 +8,7 @@ const COLUMNS = [
 ];
 const COLUMN_TITLE = Object.fromEntries(COLUMNS.map((c) => [c.id, c.title]));
 const COLORS = ["#2F5BD3", "#E0533D", "#2E9E6A", "#D99A12", "#8A4FD8", "#1F9BB0", "#D9488F", "#4A5A6A"];
-const RECURRENCE = { daily: "каждый день", weekly: "каждую неделю", monthly: "каждый месяц" };
+const RECURRENCE = { daily: "каждый день", weekly: "каждую неделю", monthly: "каждый месяц" };  // ключи t()
 const FIELD_NAMES = {
   title: "название", description: "описание", priority: "важность", category: "категорию",
   due_date: "срок", recurrence: "повтор", points: "очки", parent_id: "родительскую задачу",
@@ -18,6 +18,7 @@ const LINK_TYPES = {
   blocks: { label: "Блокирует", phrase: "блокирует" },
   relates: { label: "Связана с", phrase: "связана с" },
 };
+const linkPhrase = (type) => (LINK_TYPES[type] ? t(LINK_TYPES[type].phrase) : type);
 const THEMES = [
   { id: "auto", name: "Как в системе" },
   { id: "light", name: "Эмаль" },
@@ -62,12 +63,6 @@ function h(tag, attrs = {}, ...children) {
   return el;
 }
 
-function plural(n, one, few, many) {
-  const m = Math.abs(n) % 100;
-  if (m >= 11 && m <= 14) return many;
-  return { 1: one, 2: few, 3: few, 4: few }[m % 10] || many;
-}
-
 // ---------- API ----------
 
 class ApiError extends Error {}
@@ -77,12 +72,13 @@ async function api(method, path, body) {
   try {
     res = await fetch(path, {
       method,
-      headers: body ? { "Content-Type": "application/json" } : {},
+      // Язык интерфейса: на нём сервер отвечает ошибками и шлёт уведомления в Telegram.
+      headers: body ? { "Content-Type": "application/json", "Accept-Language": LANG } : { "Accept-Language": LANG },
       body: body ? JSON.stringify(body) : undefined,
     });
   } catch {
     setOffline(true);
-    throw new ApiError("Нет связи с сервером. Изменение не сохранено.");
+    throw new ApiError(t("Нет связи с сервером. Изменение не сохранено."));
   }
   // Ответ из кеша service worker'а помечен X-Offline: сеть недоступна.
   setOffline(res.headers.get("X-Offline") === "1");
@@ -92,14 +88,14 @@ async function api(method, path, body) {
       state.me = null;
       showAuth();
     }
-    throw new ApiError("Нужно войти");
+    throw new ApiError(t("Нужно войти"));
   }
   if (!res.ok) {
-    let msg = `Ошибка ${res.status}`;
+    let msg = t("Ошибка {status}", { status: res.status });
     try {
       const data = await res.json();
       if (typeof data.detail === "string") msg = data.detail;
-      else if (Array.isArray(data.detail)) msg = "Проверьте поля: " + data.detail.map((d) => d.loc.at(-1)).join(", ");
+      else if (Array.isArray(data.detail)) msg = t("Проверьте поля: {fields}", { fields: data.detail.map((d) => d.loc.at(-1)).join(", ") });
     } catch {}
     throw new ApiError(msg);
   }
@@ -108,8 +104,8 @@ async function api(method, path, body) {
 
 // ---------- даты ----------
 
-const fmtDay = new Intl.DateTimeFormat("ru", { day: "numeric", month: "short" });
-const fmtStamp = new Intl.DateTimeFormat("ru", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
+const fmtDay = new Intl.DateTimeFormat(LOCALE, { day: "numeric", month: "short" });
+const fmtStamp = new Intl.DateTimeFormat(LOCALE, { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
 
 function todayISO() {
   const d = new Date();
@@ -118,9 +114,9 @@ function todayISO() {
 
 function dueInfo(iso) {
   const days = Math.round((Date.parse(iso) - Date.parse(todayISO())) / 86400000);
-  if (days < 0) return { text: days === -1 ? "вчера" : `просрочено, ${fmtDay.format(new Date(iso))}`, cls: "overdue" };
-  if (days === 0) return { text: "сегодня", cls: "today" };
-  if (days === 1) return { text: "завтра", cls: "" };
+  if (days < 0) return { text: days === -1 ? t("вчера") : t("просрочено, {date}", { date: fmtDay.format(new Date(iso)) }), cls: "overdue" };
+  if (days === 0) return { text: t("сегодня"), cls: "today" };
+  if (days === 1) return { text: t("завтра"), cls: "" };
   return { text: fmtDay.format(new Date(iso)), cls: "" };
 }
 
@@ -159,13 +155,13 @@ async function showAuth() {
   f.display_name.required = setupMode;
   f.password.autocomplete = setupMode ? "new-password" : "current-password";
   $("#auth-hint").textContent = setupMode
-    ? "Создайте первого пользователя — он станет администратором и сможет добавить остальных."
-    : "Войдите, чтобы увидеть доску.";
-  $("#auth-submit").textContent = setupMode ? "Создать и войти" : "Войти";
+    ? t("Создайте первого пользователя — он станет администратором и сможет добавить остальных.")
+    : t("Войдите, чтобы увидеть доску.");
+  $("#auth-submit").textContent = setupMode ? t("Создать и войти") : t("Войти");
 
   const loginError = new URLSearchParams(location.search).get("login_error");
   if (loginError) {
-    $("#auth-error").textContent = LOGIN_ERRORS[loginError] || "Не удалось войти через Google.";
+    $("#auth-error").textContent = t(LOGIN_ERRORS[loginError] || "Не удалось войти через Google.");
     history.replaceState(null, "", "/");
   }
   if (withPassword) f.username.focus();
@@ -209,6 +205,7 @@ async function loadAll() {
   ]);
   Object.assign(state, { me, users, tasks, stats });
   syncTheme();
+  syncLang();
   renderAll();
 }
 
@@ -228,7 +225,7 @@ async function start() {
   } catch {
     if (state.offline) {
       await showAuth();
-      $("#auth-error").textContent = "Нет связи с сервером. Войти можно будет, когда появится интернет.";
+      $("#auth-error").textContent = t("Нет связи с сервером. Войти можно будет, когда появится интернет.");
       return;
     }
     return showAuth();
@@ -252,10 +249,10 @@ document.addEventListener("visibilitychange", () => {
 // ---------- фильтры ----------
 
 const userById = (id) => state.users.find((u) => u.id === id);
-const userName = (id) => userById(id)?.display_name ?? "кто-то";
+const userName = (id) => userById(id)?.display_name ?? t("кто-то");
 
 function magnet(user, extra = "") {
-  if (!user) return h("span", { class: `magnet empty ${extra}`, title: "Никто не назначен" }, "?");
+  if (!user) return h("span", { class: `magnet empty ${extra}`, title: t("Никто не назначен") }, "?");
   const initial = user.display_name.trim().charAt(0).toUpperCase();
   return h("span", { class: `magnet ${extra}`, style: `--c:${user.color}`, title: user.display_name }, initial);
 }
@@ -268,12 +265,12 @@ function renderPeopleFilter() {
     renderBoard();
   };
   box.replaceChildren(
-    h("button", { class: "chip all", "aria-pressed": String(state.filter.assignee === null), onclick: () => pick(null) }, "Все"),
+    h("button", { class: "chip all", "aria-pressed": String(state.filter.assignee === null), onclick: () => pick(null) }, t("Все")),
     ...state.users.map((u) =>
       h("button", {
         class: "chip",
         "aria-pressed": String(state.filter.assignee === u.id),
-        title: `Показать задачи: ${u.display_name}`,
+        title: t("Показать задачи: {name}", { name: u.display_name }),
         onclick: () => pick(u.id),
       }, magnet(u), h("span", { class: "chip-name" }, u.display_name)),
     ),
@@ -281,10 +278,10 @@ function renderPeopleFilter() {
 }
 
 function renderCategoryFilter() {
-  const cats = [...new Set(state.tasks.map((t) => t.category).filter(Boolean))].sort((a, b) => a.localeCompare(b, "ru"));
+  const cats = [...new Set(state.tasks.map((t) => t.category).filter(Boolean))].sort((a, b) => a.localeCompare(b, LOCALE));
   if (state.filter.category && !cats.includes(state.filter.category)) state.filter.category = "";
   $("#category-filter").replaceChildren(
-    h("option", { value: "" }, "Все категории"),
+    h("option", { value: "" }, t("Все категории")),
     ...cats.map((c) => h("option", { value: c, selected: c === state.filter.category }, c)),
   );
   $("#category-filter").hidden = cats.length === 0;
@@ -336,13 +333,15 @@ function statusWarning(task, status) {
   const lines = [];
   if (status === "done") {
     const open = childrenOf(task.id).filter((c) => c.status !== "done");
-    if (open.length) lines.push(`Не сделаны подзадачи: ${open.map((c) => `«${c.title}»`).join(", ")}.`);
+    if (open.length) lines.push(t("Не сделаны подзадачи: {list}.", { list: open.map((c) => q(c.title)).join(", ") }));
   }
   if (status !== "todo") {
     const blockers = openBlockers(task);
-    if (blockers.length) lines.push(`Задача ждёт: ${blockers.map((b) => `«${b.title}»`).join(", ")}.`);
+    if (blockers.length) lines.push(t("Задача ждёт: {list}.", { list: blockers.map((b) => q(b.title)).join(", ") }));
   }
-  return lines.length ? `${lines.join("\n")}\n\nВсё равно перенести «${task.title}» в ${COLUMN_TITLE[status]}?` : null;
+  return lines.length
+    ? `${lines.join("\n")}\n\n${t("Всё равно перенести {task} в {column}?", { task: q(task.title), column: COLUMN_TITLE[status] })}`
+    : null;
 }
 
 function columnTasks(status) {
@@ -368,65 +367,65 @@ function renderBoard() {
         tasks = recent;
       }
       const list = h("div", { class: "cards", "data-status": col.id },
-        tasks.length ? tasks.map(renderCard) : h("p", { class: "empty-col" }, col.empty));
+        tasks.length ? tasks.map(renderCard) : h("p", { class: "empty-col" }, t(col.empty)));
       wireDropZone(list);
       return h("section", { class: "column", "aria-label": col.title },
         h("div", { class: "column-head" },
           h("h2", {}, col.title),
           h("span", { class: "count" }, String(tasks.length)),
-          h("button", { class: "add", title: `Добавить в ${col.title}`, "aria-label": `Добавить в ${col.title}`, onclick: () => openTask(null, col.id) }, "+"),
+          h("button", { class: "add", title: t("Добавить в {column}", { column: col.title }), "aria-label": t("Добавить в {column}", { column: col.title }), onclick: () => openTask(null, col.id) }, "+"),
         ),
         list,
         hiddenOld ? h("button", { class: "show-old", onclick: () => { state.showOldDone = true; renderBoard(); } },
-          `Показать старые (${hiddenOld})`) : null,
+          t("Показать старые ({n})", { n: hiddenOld })) : null,
       );
     }),
   );
 }
 
-function renderCard(t) {
+function renderCard(task) {
   const meta = [];
-  const done = t.status === "done";
-  if (t.priority === "high" && !done) meta.push(h("span", { class: "tag urgent" }, "Срочно"));
-  if (t.due_date && !done) {
-    const d = dueInfo(t.due_date);
+  const done = task.status === "done";
+  if (task.priority === "high" && !done) meta.push(h("span", { class: "tag urgent" }, t("Срочно")));
+  if (task.due_date && !done) {
+    const d = dueInfo(task.due_date);
     meta.push(h("span", { class: `tag ${d.cls}` }, d.text));
   }
-  if (t.checklist.length) {
-    const ready = t.checklist.filter((i) => i.done).length;
-    meta.push(h("span", { class: `tag ${ready === t.checklist.length ? "complete" : ""}`, title: "Чек-лист" },
-      `☑ ${ready}/${t.checklist.length}`));
+  if (task.checklist.length) {
+    const ready = task.checklist.filter((i) => i.done).length;
+    meta.push(h("span", { class: `tag ${ready === task.checklist.length ? "complete" : ""}`, title: t("Чек-лист") },
+      `☑ ${ready}/${task.checklist.length}`));
   }
-  const children = childrenOf(t.id);
+  const children = childrenOf(task.id);
   if (children.length) {
     const ready = children.filter((c) => c.status === "done").length;
-    meta.push(h("span", { class: `tag ${ready === children.length ? "complete" : ""}`, title: "Подзадачи" },
+    meta.push(h("span", { class: `tag ${ready === children.length ? "complete" : ""}`, title: t("Подзадачи") },
       `▤ ${ready}/${children.length}`));
   }
-  const blockers = done ? [] : openBlockers(t);
+  const blockers = done ? [] : openBlockers(task);
   if (blockers.length) {
-    const more = blockers.length > 1 ? ` и ещё ${blockers.length - 1}` : "";
+    const more = blockers.length > 1 ? t(" и ещё {n}", { n: blockers.length - 1 }) : "";
     meta.push(h("span", { class: "tag wait", title: blockers.map((b) => b.title).join(", ") },
-      `⏳ ждёт: ${blockers[0].title}${more}`));
+      t("⏳ ждёт: {title}{more}", { title: blockers[0].title, more })));
   }
-  if (t.recurrence !== "none") meta.push(h("span", { class: "tag", title: "Повторяется" }, `↻ ${RECURRENCE[t.recurrence]}`));
-  if (t.category) meta.push(h("span", { class: "tag" }, t.category));
+  if (task.recurrence !== "none") meta.push(h("span", { class: "tag", title: t("Повторяется") }, `↻ ${t(RECURRENCE[task.recurrence])}`));
+  if (task.category) meta.push(h("span", { class: "tag" }, task.category));
   // Очки — последним элементом строки меток: в углу карточки они наезжали на магнит.
-  if (t.points > 1) {
-    meta.push(h("span", { class: "points", title: `${t.points} ${plural(t.points, "очко", "очка", "очков")} за выполнение` }, `+${t.points}`));
+  if (task.points > 1) {
+    meta.push(h("span", { class: "points", title: t("{n} {points} за выполнение", { n: task.points, points: pointsWord(task.points) }) }, `+${task.points}`));
   }
 
   const card = h("article", {
-    class: `card ${t.priority} ${done ? "done" : ""}`,
+    class: `card ${task.priority} ${done ? "done" : ""}`,
     draggable: "true",
     tabindex: "0",
-    "data-id": t.id,
-    onclick: () => openTask(t),
-    onkeydown: (e) => { if (e.key === "Enter") openTask(t); },
+    "data-id": task.id,
+    onclick: () => openTask(task),
+    onkeydown: (e) => { if (e.key === "Enter") openTask(task); },
     ondragstart: (e) => {
-      state.dragId = t.id;
+      state.dragId = task.id;
       e.dataTransfer.effectAllowed = "move";
-      e.dataTransfer.setData("text/plain", String(t.id));
+      e.dataTransfer.setData("text/plain", String(task.id));
       requestAnimationFrame(() => card.classList.add("dragging"));
     },
     ondragend: () => {
@@ -435,10 +434,10 @@ function renderCard(t) {
       document.querySelectorAll(".drop-marker").forEach((m) => m.remove());
     },
   },
-    magnet(userById(t.assignee_id)),
-    t.parent_id && taskById(t.parent_id)
-      ? h("div", { class: "parent-ref", title: "Входит в задачу" }, `↳ ${taskById(t.parent_id).title}`) : null,
-    h("div", { class: "title" }, t.title),
+    magnet(userById(task.assignee_id)),
+    task.parent_id && taskById(task.parent_id)
+      ? h("div", { class: "parent-ref", title: t("Входит в задачу") }, `↳ ${taskById(task.parent_id).title}`) : null,
+    h("div", { class: "title" }, task.title),
     h("div", { class: "meta" }, meta),
   );
   return card;
@@ -513,9 +512,9 @@ function wireDropZone(list) {
 function celebrate(task) {
   const parts = [];
   if (task.assignee_id && task.points) {
-    parts.push(`${userName(task.assignee_id)}: +${task.points} ${plural(task.points, "очко", "очка", "очков")}`);
+    parts.push(t("{name}: +{n} {points}", { name: userName(task.assignee_id), n: task.points, points: pointsWord(task.points) }));
   }
-  if (task.recurrence !== "none") parts.push("следующий повтор добавлен в To Do");
+  if (task.recurrence !== "none") parts.push(t("следующий повтор добавлен в To Do"));
   if (parts.length) toast(parts.join(", "));
 }
 
@@ -527,35 +526,35 @@ const taskForm = $("#task-form");
 function openTask(task, status = "todo", parentId = null) {
   state.editingTask = task;
   $("#task-error").textContent = "";
-  $("#task-dialog-title").textContent = task ? "Задача" : "Новая задача";
-  $("#task-save").textContent = task ? "Сохранить" : "Добавить";
+  $("#task-dialog-title").textContent = task ? t("Задача") : t("Новая задача");
+  $("#task-save").textContent = task ? t("Сохранить") : t("Добавить");
   $("#task-delete").hidden = !task;
   $("#activity").hidden = !task;
   taskDialog.classList.toggle("wide", Boolean(task));
 
   taskForm.assignee_id.replaceChildren(
-    h("option", { value: "" }, "Никто"),
+    h("option", { value: "" }, t("Никто")),
     ...state.users.map((u) => h("option", { value: u.id }, u.display_name)),
   );
   taskForm.status.replaceChildren(...COLUMNS.map((c) => h("option", { value: c.id }, c.title)));
 
-  const t = task || {
+  const values = task || {
     title: "", description: "", status, priority: "normal", category: state.filter.category,
     assignee_id: state.filter.assignee ?? state.me.id, due_date: null, recurrence: "none", points: 1,
     parent_id: parentId,
   };
-  taskForm.title.value = t.title;
-  taskForm.description.value = t.description;
-  taskForm.assignee_id.value = t.assignee_id ?? "";
-  taskForm.status.value = t.status;
-  taskForm.due_date.value = t.due_date ?? "";
-  taskForm.recurrence.value = t.recurrence;
-  taskForm.category.value = t.category;
-  ensurePointsOption(t.points);
-  taskForm.points.value = String(t.points);
-  taskForm.querySelector(`input[name="priority"][value="${t.priority}"]`).checked = true;
+  taskForm.title.value = values.title;
+  taskForm.description.value = values.description;
+  taskForm.assignee_id.value = values.assignee_id ?? "";
+  taskForm.status.value = values.status;
+  taskForm.due_date.value = values.due_date ?? "";
+  taskForm.recurrence.value = values.recurrence;
+  taskForm.category.value = values.category;
+  ensurePointsOption(values.points);
+  taskForm.points.value = String(values.points);
+  taskForm.querySelector(`input[name="priority"][value="${values.priority}"]`).checked = true;
 
-  fillParentSelect(task, t.parent_id ?? null);
+  fillParentSelect(task, values.parent_id ?? null);
   $("#subtask-input").value = "";
   renderRelations();
 
@@ -619,8 +618,8 @@ taskForm.addEventListener("submit", async (e) => {
 $("#task-delete").addEventListener("click", async () => {
   const task = state.editingTask;
   if (!task) return;
-  const warn = task.status === "done" && task.points ? " Очки за неё пропадут из рейтинга." : "";
-  if (!confirm(`Удалить задачу «${task.title}»?${warn}`)) return;
+  const warn = task.status === "done" && task.points ? t(" Очки за неё пропадут из рейтинга.") : "";
+  if (!confirm(t("Удалить задачу {task}?{warn}", { task: q(task.title), warn }))) return;
   try {
     await api("DELETE", `/api/tasks/${task.id}`);
     state.editingTask = null;
@@ -641,14 +640,14 @@ function fillParentSelect(task, parentId) {
   // Родителем может быть только самостоятельная задача: подзадачи — один уровень.
   const candidates = state.tasks
     .filter((t) => t.parent_id == null && t.id !== task?.id && (t.status !== "done" || t.id === parentId))
-    .sort((a, b) => a.title.localeCompare(b.title, "ru"));
+    .sort((a, b) => a.title.localeCompare(b.title, LOCALE));
   select.replaceChildren(
-    h("option", { value: "" }, "Ни в какую, самостоятельная задача"),
+    h("option", { value: "" }, t("Ни в какую, самостоятельная задача")),
     ...candidates.map((t) => h("option", { value: t.id }, t.title)),
   );
   select.value = parentId ?? "";
   select.disabled = hasChildren;
-  select.title = hasChildren ? "У задачи есть свои подзадачи, поэтому сама она подзадачей быть не может" : "";
+  select.title = hasChildren ? t("У задачи есть свои подзадачи, поэтому сама она подзадачей быть не может") : "";
 }
 
 // Открыть другую задачу из окна текущей.
@@ -674,7 +673,7 @@ function renderRelations() {
   if (canHaveChildren) {
     const children = childrenOf(task.id);
     const ready = children.filter((c) => c.status === "done").length;
-    $("#subtasks-progress").textContent = children.length ? `${ready} из ${children.length}` : "";
+    $("#subtasks-progress").textContent = children.length ? t("{ready} из {total}", { ready, total: children.length }) : "";
     $("#subtasks-list").replaceChildren(...children.map((c) => relRow(c)));
   }
 
@@ -687,9 +686,9 @@ function renderRelations() {
       const other = taskById(l.task_id);
       if (!other) return null;
       return relRow(other, {
-        before: h("span", { class: `link-type ${l.type}` }, LINK_TYPES[l.type].label),
+        before: h("span", { class: `link-type ${l.type}` }, t(LINK_TYPES[l.type].label)),
         after: h("button", {
-          type: "button", class: "icon-btn", "aria-label": `Убрать связь с «${other.title}»`,
+          type: "button", class: "icon-btn", "aria-label": t("Убрать связь с {task}", { task: q(other.title) }),
           onclick: () => removeLink(l.id),
         }, "×"),
       });
@@ -698,9 +697,9 @@ function renderRelations() {
   const linked = new Set(task.links.map((l) => l.task_id));
   const targets = state.tasks
     .filter((t) => t.id !== task.id && !linked.has(t.id) && !isOldDone(t))
-    .sort((a, b) => STATUS_ORDER[a.status] - STATUS_ORDER[b.status] || a.title.localeCompare(b.title, "ru"));
+    .sort((a, b) => STATUS_ORDER[a.status] - STATUS_ORDER[b.status] || a.title.localeCompare(b.title, LOCALE));
   $("#link-target").replaceChildren(
-    h("option", { value: "" }, "Выберите задачу"),
+    h("option", { value: "" }, t("Выберите задачу")),
     ...COLUMNS.map((c) => {
       const group = targets.filter((t) => t.status === c.id);
       return group.length ? h("optgroup", { label: c.title }, group.map((t) => h("option", { value: t.id }, t.title))) : null;
@@ -778,7 +777,7 @@ function checklistItems() {
 function renderChecklist() {
   const items = checklistItems();
   const ready = items.filter((i) => i.done).length;
-  $("#checklist-progress").textContent = items.length ? `${ready} из ${items.length}` : "";
+  $("#checklist-progress").textContent = items.length ? t("{ready} из {total}", { ready, total: items.length }) : "";
   $("#checklist-items").replaceChildren(
     ...items.map((item) =>
       h("li", { class: item.done ? "done" : "" },
@@ -786,7 +785,7 @@ function renderChecklist() {
           h("input", { type: "checkbox", checked: item.done, onchange: (e) => toggleItem(item, e.target.checked) }),
           h("span", {}, item.text),
         ),
-        h("button", { type: "button", class: "icon-btn", "aria-label": `Удалить пункт «${item.text}»`, onclick: () => removeItem(item) }, "×"),
+        h("button", { type: "button", class: "icon-btn", "aria-label": t("Удалить пункт {item}", { item: q(item.text) }), onclick: () => removeItem(item) }, "×"),
       ),
     ),
   );
@@ -861,17 +860,17 @@ function describeEvent(e) {
   const p = e.payload;
   switch (e.kind) {
     case "created":
-      return p.recurring_from ? "создаёт следующий повтор" : "создаёт задачу";
+      return p.recurring_from ? t("создаёт следующий повтор") : t("создаёт задачу");
     case "status":
-      return `переносит из ${COLUMN_TITLE[p.from]} в ${COLUMN_TITLE[p.to]}`;
+      return t("переносит из {from} в {to}", { from: COLUMN_TITLE[p.from], to: COLUMN_TITLE[p.to] });
     case "assigned":
-      return p.to ? `назначает исполнителем: ${userName(p.to)}` : "снимает исполнителя";
+      return p.to ? t("назначает исполнителем: {name}", { name: userName(p.to) }) : t("снимает исполнителя");
     case "edited":
-      return `меняет ${p.fields.map((f) => FIELD_NAMES[f] || f).join(", ")}`;
+      return t("меняет {fields}", { fields: p.fields.map((f) => (FIELD_NAMES[f] ? t(FIELD_NAMES[f]) : f)).join(", ") });
     case "linked":
-      return `связывает: ${LINK_TYPES[p.type]?.phrase ?? p.type} «${taskById(p.other)?.title ?? "удалённая задача"}»`;
+      return t("связывает: {phrase} {task}", { phrase: linkPhrase(p.type), task: q(taskById(p.other)?.title ?? t("удалённая задача")) });
     case "unlinked":
-      return `убирает связь: ${LINK_TYPES[p.type]?.phrase ?? p.type} «${taskById(p.other)?.title ?? "удалённая задача"}»`;
+      return t("убирает связь: {phrase} {task}", { phrase: linkPhrase(p.type), task: q(taskById(p.other)?.title ?? t("удалённая задача")) });
     default:
       return e.kind;
   }
@@ -880,7 +879,7 @@ function describeEvent(e) {
 function renderEvent(e) {
   const author = userById(e.user_id);
   const when = h("time", { datetime: e.created_at }, fmtStamp.format(utcToLocal(e.created_at)));
-  const name = h("b", {}, author ? author.display_name : "Удалённый пользователь");
+  const name = h("b", {}, author ? author.display_name : t("Удалённый пользователь"));
   if (e.kind !== "comment") {
     return h("li", { class: "event" }, name, " ", describeEvent(e), h("span", { class: "muted" }, ", "), when);
   }
@@ -889,14 +888,14 @@ function renderEvent(e) {
     magnet(author),
     h("div", { class: "bubble" },
       h("div", { class: "bubble-head" }, name, when,
-        canDelete ? h("button", { type: "button", class: "link-btn", onclick: () => deleteComment(e) }, "удалить") : null),
+        canDelete ? h("button", { type: "button", class: "link-btn", onclick: () => deleteComment(e) }, t("удалить")) : null),
       h("p", {}, e.payload.text),
     ),
   );
 }
 
 async function deleteComment(e) {
-  if (!confirm("Удалить комментарий?")) return;
+  if (!confirm(t("Удалить комментарий?"))) return;
   try {
     await api("DELETE", `/api/events/${e.id}`);
     loadEvents();
@@ -942,10 +941,10 @@ async function renderRating() {
         h("div", { class: "who" },
           h("div", { class: "row" },
             h("b", {}, u ? u.display_name : "—"),
-            h("span", { class: "score" }, `${r.points} ${plural(r.points, "очко", "очка", "очков")}`),
+            h("span", { class: "score" }, `${r.points} ${pointsWord(r.points)}`),
           ),
           h("div", { class: "bar" }, h("span", { style: `width:${(r.points / max) * 100}%;--c:${u?.color}` })),
-          h("div", { class: "muted small" }, `Выполнено задач: ${r.done}`),
+          h("div", { class: "muted small" }, t("Выполнено задач: {n}", { n: r.done })),
         ),
       );
     }),
@@ -992,17 +991,17 @@ function syncTheme() {
 function renderThemes() {
   const active = currentTheme();
   $("#theme-list").replaceChildren(
-    ...THEMES.map((t) =>
+    ...THEMES.map((theme) =>
       h("button", {
-        type: "button", class: "theme-tile", role: "radio", "aria-checked": String(t.id === active),
-        onclick: () => chooseTheme(t.id),
+        type: "button", class: "theme-tile", role: "radio", "aria-checked": String(theme.id === active),
+        onclick: () => chooseTheme(theme.id),
       },
-        h("span", { class: "theme-preview", "data-theme": t.id, "aria-hidden": "true" },
+        h("span", { class: "theme-preview", "data-theme": theme.id, "aria-hidden": "true" },
           h("span", { class: "pv-col" }, h("span", { class: "pv-card" }), h("span", { class: "pv-card urgent short" })),
           h("span", { class: "pv-col" }, h("span", { class: "pv-card accent" })),
           h("span", { class: "pv-col" }, h("span", { class: "pv-card short" })),
         ),
-        h("span", { class: "theme-name" }, t.name),
+        h("span", { class: "theme-name" }, t(theme.name)),
       ),
     ),
   );
@@ -1018,7 +1017,7 @@ async function chooseTheme(theme) {
   } catch (err) {
     applyTheme(previous);
     renderThemes();
-    toast(`Тема не сохранилась: ${err.message}`);
+    toast(t("Тема не сохранилась: {error}", { error: err.message }));
   } finally {
     themeSaving = false;
   }
@@ -1026,8 +1025,64 @@ async function chooseTheme(theme) {
 
 $("#open-theme").addEventListener("click", () => {
   renderThemes();
+  renderLangChoice();
   themeDialog.showModal();
 });
+
+// ---------- язык ----------
+
+let langSaving = false;
+
+function storeLangChoice(choice) {
+  try {
+    localStorage.setItem("lang", choice);
+    return localStorage.getItem("lang") === choice;
+  } catch {
+    return false;
+  }
+}
+
+function renderLangChoice() {
+  const choice = storedLangChoice();
+  document.querySelectorAll("#lang-choice button").forEach((b) => {
+    b.setAttribute("aria-checked", String(b.dataset.lang === choice));
+  });
+  document.querySelectorAll(".lang-switch button").forEach((b) => {
+    b.setAttribute("aria-pressed", String(b.dataset.lang === LANG));
+  });
+}
+
+// Язык меняется перезагрузкой: так гарантированно перерисуется всё, включая окна.
+function applyLangChoice(choice) {
+  const stored = storeLangChoice(choice);
+  if (stored && effectiveLang(choice) !== LANG) location.reload();
+  else renderLangChoice();
+}
+
+async function chooseLang(choice) {
+  if (state.me) {
+    langSaving = true;
+    try {
+      state.me = await api("PATCH", `/api/users/${state.me.id}`, { lang: choice });
+    } catch (err) {
+      toast(t("Тема не сохранилась: {error}", { error: err.message }));
+      return;
+    } finally {
+      langSaving = false;
+    }
+  }
+  applyLangChoice(choice);
+}
+
+// Выбор из профиля важнее локального: его могли сменить на другом устройстве.
+function syncLang() {
+  if (!langSaving && state.me?.lang && state.me.lang !== storedLangChoice()) applyLangChoice(state.me.lang);
+}
+
+document.querySelectorAll("#lang-choice button, .lang-switch button").forEach((b) => {
+  b.addEventListener("click", () => chooseLang(b.dataset.lang));
+});
+renderLangChoice();
 matchMedia("(prefers-color-scheme: dark)").addEventListener("change", updateThemeColor);
 updateThemeColor();
 
@@ -1041,7 +1096,7 @@ function renderSwatches() {
   $("#swatches").replaceChildren(
     ...COLORS.map((c) =>
       h("button", {
-        type: "button", role: "radio", "aria-checked": String(c === pickedColor), "aria-label": `Цвет ${c}`,
+        type: "button", role: "radio", "aria-checked": String(c === pickedColor), "aria-label": t("Цвет {color}", { color: c }),
         onclick: () => { pickedColor = c; renderSwatches(); },
       }, h("span", { class: "magnet", style: `--c:${c}` })),
     ),
@@ -1054,20 +1109,20 @@ function renderTelegramBox() {
     box.hidden = !state.me.is_admin;
     box.replaceChildren(
       h("p", { class: "muted small" },
-        "Уведомления в Telegram выключены. Чтобы включить, создайте бота у @BotFather и запустите сервер с переменной TELEGRAM_BOT_TOKEN — подробности в README."),
+        t("Уведомления в Telegram выключены. Чтобы включить, создайте бота у @BotFather и запустите сервер с переменной TELEGRAM_BOT_TOKEN — подробности в README.")),
     );
     return;
   }
   box.hidden = false;
   if (state.me.telegram_linked) {
     box.replaceChildren(
-      h("p", {}, "Уведомления приходят вам в Telegram."),
-      h("button", { type: "button", class: "btn ghost", onclick: unlinkTelegram }, "Отключить"),
+      h("p", {}, t("Уведомления приходят вам в Telegram.")),
+      h("button", { type: "button", class: "btn ghost", onclick: unlinkTelegram }, t("Отключить")),
     );
   } else {
     box.replaceChildren(
-      h("p", {}, "Получайте в Telegram новые задачи, комментарии и утреннюю сводку."),
-      h("button", { type: "button", class: "btn primary", onclick: linkTelegram }, "Подключить Telegram"),
+      h("p", {}, t("Получайте в Telegram новые задачи, комментарии и утреннюю сводку.")),
+      h("button", { type: "button", class: "btn primary", onclick: linkTelegram }, t("Подключить Telegram")),
     );
   }
 }
@@ -1077,8 +1132,8 @@ async function linkTelegram() {
     const { url } = await api("POST", "/api/me/telegram");
     window.open(url, "_blank", "noopener");
     $("#telegram-box").replaceChildren(
-      h("p", {}, "В открывшемся чате нажмите «Start». Когда вернётесь сюда, статус обновится."),
-      h("a", { href: url, target: "_blank", rel: "noopener", class: "btn ghost" }, "Открыть бота ещё раз"),
+      h("p", {}, t("В открывшемся чате нажмите «Start». Когда вернётесь сюда, статус обновится.")),
+      h("a", { href: url, target: "_blank", rel: "noopener", class: "btn ghost" }, t("Открыть бота ещё раз")),
     );
   } catch (err) {
     toast(err.message);
@@ -1096,20 +1151,20 @@ function renderPeopleList() {
     ...state.users.map((u) => {
       const s = state.stats.find((x) => x.user_id === u.id) || { open: 0, done_week: 0 };
       const canEdit = isAdmin || u.id === state.me.id;
-      const meta = [`В работе: ${s.open}`, `сделано за неделю: ${s.done_week}`];
-      if (state.config.telegram && u.telegram_linked) meta.push("Telegram подключён");
+      const meta = [t("В работе: {n}", { n: s.open }), t("сделано за неделю: {n}", { n: s.done_week })];
+      if (state.config.telegram && u.telegram_linked) meta.push(t("Telegram подключён"));
       if (isAdmin && u.google_email) meta.push(`Google: ${u.google_email}`);
       return h("li", {},
         magnet(u, "lg"),
         h("div", { class: "who" },
           h("b", {}, u.display_name), " ",
-          h("span", { class: "muted small" }, `@${u.username}${u.is_admin ? ", админ" : ""}`),
+          h("span", { class: "muted small" }, `@${u.username}${u.is_admin ? t(", админ") : ""}`),
           h("div", { class: "muted small" }, meta.join(", ")),
         ),
         h("div", { class: "row-actions" },
-          canEdit ? h("button", { class: "btn ghost", onclick: () => editUser(u) }, "Изменить") : null,
+          canEdit ? h("button", { class: "btn ghost", onclick: () => editUser(u) }, t("Изменить")) : null,
           isAdmin && u.id !== state.me.id
-            ? h("button", { class: "btn danger-ghost", onclick: () => deleteUser(u) }, "Удалить") : null,
+            ? h("button", { class: "btn danger-ghost", onclick: () => deleteUser(u) }, t("Удалить")) : null,
         ),
       );
     }),
@@ -1122,8 +1177,8 @@ function resetUserForm() {
   pickedColor = COLORS[state.users.length % COLORS.length];
   const isAdmin = state.me.is_admin;
   userForm.hidden = !isAdmin;
-  $("#user-form-title").textContent = "Добавить человека";
-  $("#user-save").textContent = "Добавить";
+  $("#user-form-title").textContent = t("Добавить человека");
+  $("#user-save").textContent = t("Добавить");
   $("#user-cancel").hidden = true;
   $("#user-username-field").hidden = false;
   $("#user-admin-field").hidden = !isAdmin;
@@ -1138,8 +1193,8 @@ function resetUserForm() {
 function editUser(u) {
   state.editingUser = u;
   userForm.hidden = false;
-  $("#user-form-title").textContent = u.id === state.me.id ? "Мой профиль" : `Изменить: ${u.display_name}`;
-  $("#user-save").textContent = "Сохранить";
+  $("#user-form-title").textContent = u.id === state.me.id ? t("Мой профиль") : t("Изменить: {name}", { name: u.display_name });
+  $("#user-save").textContent = t("Сохранить");
   $("#user-cancel").hidden = false;
   $("#user-username-field").hidden = true;
   $("#user-admin-field").hidden = !state.me.is_admin || u.id === state.me.id;
@@ -1148,7 +1203,7 @@ function editUser(u) {
   userForm.username.required = false;
   userForm.password.required = false;
   userForm.password.value = "";
-  userForm.password.placeholder = "Оставьте пустым, чтобы не менять";
+  userForm.password.placeholder = t("Оставьте пустым, чтобы не менять");
   userForm.display_name.value = u.display_name;
   userForm.is_admin.checked = u.is_admin;
   userForm.google_email.value = u.google_email ?? "";
@@ -1159,7 +1214,7 @@ function editUser(u) {
 }
 
 async function deleteUser(u) {
-  if (!confirm(`Удалить ${u.display_name}? Его задачи останутся без исполнителя.`)) return;
+  if (!confirm(t("Удалить {name}? Его задачи останутся без исполнителя.", { name: u.display_name }))) return;
   try {
     await api("DELETE", `/api/users/${u.id}`);
     if (state.filter.assignee === u.id) state.filter.assignee = null;

@@ -9,6 +9,21 @@ and a Helm chart `oci://ghcr.io/gera-corp/charts/to-do-board` of the same versio
 The GitHub release notes are taken from the matching section below, so add an entry
 here before pushing a `vX.Y.Z` tag.
 
+## [0.6.0] - 2026-10-23
+
+### Added
+- English and Russian interface, English by default. Until someone picks a language,
+  the board follows the browser: Russian for a Russian browser, English otherwise.
+- Language choice in Theme → Appearance, saved in the user profile and synced across
+  devices, plus an English | Русский switch on the sign-in page.
+- API errors, Telegram notifications, bot replies and the morning digest arrive in the
+  language each person uses the board in.
+- The installed app's name follows the browser language ("Our Home" / "Наш дом").
+- Releases on GitHub with notes from this changelog, published automatically by CI.
+
+### Changed
+- People who used the board before this release keep Russian notifications.
+
 ## [0.5.0] - 2026-10-23
 
 ### Added
@@ -100,6 +115,7 @@ here before pushing a `vX.Y.Z` tag.
 - Distroless non-root container image for amd64 and arm64, CI with tests, linters,
   SBOM, provenance and Trivy scanning, and a Helm chart with secrets from Vault.
 
+[0.6.0]: https://github.com/gera-corp/to-do-board/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/gera-corp/to-do-board/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/gera-corp/to-do-board/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/gera-corp/to-do-board/compare/v0.2.2...v0.3.0

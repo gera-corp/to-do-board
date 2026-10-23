@@ -101,7 +101,7 @@ def test_blocking_cycles_are_rejected(admin):
     assert link(admin, a["id"], "blocks", b["id"]).status_code == 201
     assert link(admin, b["id"], "blocks", c["id"]).status_code == 201
     r = link(admin, c["id"], "blocks", a["id"])
-    assert r.status_code == 400 and "цикл" in r.json()["detail"]
+    assert r.status_code == 400 and "cycle" in r.json()["detail"]
 
 
 def test_unlink_and_history(admin):
@@ -143,4 +143,4 @@ def test_unblocked_task_owner_is_notified(app, admin, db_path, notifier):
     admin.post(f"/api/tasks/{sand['id']}/move", json={"status": "done", "index": 0})
     assert len(notifier.sent) == 1
     chat, text = notifier.sent[0]
-    assert chat == 300 and "Можно начинать" in text and "Покрасить стены" in text
+    assert chat == 300 and "You can start" in text and "Покрасить стены" in text

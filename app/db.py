@@ -111,6 +111,14 @@ MIGRATIONS = [
     );
     CREATE INDEX idx_links_to ON task_links(to_id);
     """,
+    # 6: язык интерфейса. lang — выбор в профиле (auto — язык браузера);
+    # ui_lang — язык, на котором человек фактически пользуется доской (для уведомлений).
+    # Кто пользовался доской до этой версии, видел её на русском.
+    """
+    ALTER TABLE users ADD COLUMN lang TEXT NOT NULL DEFAULT 'auto';
+    ALTER TABLE users ADD COLUMN ui_lang TEXT NOT NULL DEFAULT 'en';
+    UPDATE users SET ui_lang = 'ru';
+    """,
 ]
 
 

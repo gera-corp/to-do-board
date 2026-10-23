@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="ru">
+<html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -43,6 +43,10 @@
         <button class="btn primary" id="auth-submit">Войти</button>
       </div>
       <p id="auth-error" class="error" role="alert"></p>
+      <div class="lang-switch" role="group" aria-label="Язык">
+        <button type="button" data-lang="en" lang="en">English</button>
+        <button type="button" data-lang="ru" lang="ru">Русский</button>
+      </div>
     </form>
   </main>
 
@@ -170,8 +174,15 @@
         <h2>Оформление</h2>
         <button type="button" class="icon-btn" data-close aria-label="Закрыть">×</button>
       </div>
+      <h3 class="dialog-subhead">Язык</h3>
+      <div class="segmented" id="lang-choice" role="radiogroup" aria-label="Язык">
+        <button type="button" role="radio" data-lang="auto">Как в браузере</button>
+        <button type="button" role="radio" data-lang="en" lang="en">English</button>
+        <button type="button" role="radio" data-lang="ru" lang="ru">Русский</button>
+      </div>
+      <h3 class="dialog-subhead">Тема</h3>
       <div class="themes" id="theme-list" role="radiogroup" aria-label="Тема"></div>
-      <p class="muted small">Тема сохраняется в вашем профиле и будет одинаковой на всех устройствах.</p>
+      <p class="muted small">Тема и язык сохраняются в вашем профиле и будут одинаковыми на всех устройствах.</p>
     </div>
   </dialog>
 
@@ -223,6 +234,7 @@
     </div>
   </dialog>
 
+  <script src="i18n.js"></script>
   <script src="app.js"></script>
 </body>
 </html>
