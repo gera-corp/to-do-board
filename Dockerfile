@@ -26,7 +26,7 @@ RUN python -m compileall -q -j 0 /install && mkdir -p /data
 
 # ---------- финальный образ ----------
 # distroless: нет shell, пакетного менеджера и лишних утилит; пользователь nonroot (65532).
-FROM gcr.io/distroless/python3-debian13:nonroot@sha256:83aa8d4f74a4d7f7cf2d472054139bef71a927b76c680c0f2e1021d6b1d6d732
+FROM gcr.io/distroless/python3-debian13:nonroot@sha256:727eccc5d83f11273c954652667b5b5a1c66120bd4cfb884e879ab77dcdf966a
 
 ARG VERSION=dev
 LABEL org.opencontainers.image.title="to-do-board" \
