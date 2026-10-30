@@ -119,6 +119,44 @@ MIGRATIONS = [
     ALTER TABLE users ADD COLUMN ui_lang TEXT NOT NULL DEFAULT 'en';
     UPDATE users SET ui_lang = 'ru';
     """,
+    # 7: доски и свои колонки. tasks.status остаётся и хранит роль колонки: на ней держится
+    # логика очков, повторов и уведомлений. Пересобирать tasks нельзя: DROP TABLE при
+    # включённых внешних ключах каскадно удалил бы чек-листы, историю и связи.
+    """
+    CREATE TABLE boards (
+        id             INTEGER PRIMARY KEY,
+        title          TEXT NOT NULL DEFAULT '',
+        points_enabled INTEGER NOT NULL DEFAULT 1,
+        position       INTEGER NOT NULL DEFAULT 0,
+        created_at     TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE board_columns (
+        id       INTEGER PRIMARY KEY,
+        board_id INTEGER NOT NULL REFERENCES boards(id) ON DELETE CASCADE,
+        title    TEXT NOT NULL,
+        role     TEXT NOT NULL CHECK (role IN ('todo', 'in_progress', 'review', 'done')),
+        position INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE INDEX idx_columns_board ON board_columns(board_id, position);
+
+    INSERT INTO boards (id, title)
+    SELECT 1, CASE WHEN EXISTS (SELECT 1 FROM users) THEN 'Дела по дому' ELSE '' END;
+    INSERT INTO board_columns (board_id, title, role, position) VALUES
+        (1, 'To Do', 'todo', 0), (1, 'In Progress', 'in_progress', 1),
+        (1, 'Review', 'review', 2), (1, 'Done', 'done', 3);
+
+    ALTER TABLE tasks ADD COLUMN board_id INTEGER REFERENCES boards(id);
+    ALTER TABLE tasks ADD COLUMN column_id INTEGER REFERENCES board_columns(id);
+    UPDATE tasks SET board_id = 1,
+                     column_id = (SELECT c.id FROM board_columns c WHERE c.role = tasks.status);
+    CREATE INDEX idx_tasks_board ON tasks(board_id);
+    CREATE INDEX idx_tasks_column ON tasks(column_id, position);
+
+    -- Установка, которой уже пользуются, сохраняет своё название.
+    INSERT INTO settings (key, value)
+    SELECT 'site_title', 'Наш дом' WHERE EXISTS (SELECT 1 FROM users);
+    """,
 ]
 
 

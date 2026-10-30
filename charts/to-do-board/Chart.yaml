@@ -1,6 +1,6 @@
 apiVersion: v2
 name: to-do-board
-description: Канбан-доска для домашних дел (FastAPI + SQLite)
+description: Kanban boards with custom columns for any kind of work (FastAPI + SQLite)
 type: application
 # Версии ниже — для установки из исходников. При публикации CI подставляет
 # в version и appVersion номер из git-тега (v1.2.3 -> 1.2.3).

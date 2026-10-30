@@ -1,12 +1,20 @@
 "use strict";
 
-const COLUMNS = [
-  { id: "todo", title: "To Do", empty: "Пока пусто — добавьте задачу" },
-  { id: "in_progress", title: "In Progress", empty: "Перетащите сюда то, чем заняты" },
-  { id: "review", title: "Review", empty: "Сюда — то, что нужно проверить" },
-  { id: "done", title: "Done", empty: "Здесь появятся сделанные дела" },
+// Подпись пустой колонки зависит от роли: названия колонок у каждой доски свои.
+const EMPTY_BY_ROLE = {
+  todo: "Пока пусто — добавьте задачу",
+  in_progress: "Перетащите сюда то, чем заняты",
+  review: "Сюда — то, что нужно проверить",
+  done: "Здесь появятся сделанные дела",
+};
+const ROLES = [
+  { id: "todo", label: "Начальная" },
+  { id: "in_progress", label: "В работе" },
+  { id: "review", label: "Проверка" },
+  { id: "done", label: "Готово" },
 ];
-const COLUMN_TITLE = Object.fromEntries(COLUMNS.map((c) => [c.id, c.title]));
+// Старые записи истории хранят только роль: тогда колонки ещё не переименовывались.
+const LEGACY_COLUMN_TITLE = { todo: "To Do", in_progress: "In Progress", review: "Review", done: "Done" };
 const COLORS = ["#2F5BD3", "#E0533D", "#2E9E6A", "#D99A12", "#8A4FD8", "#1F9BB0", "#D9488F", "#4A5A6A"];
 const RECURRENCE = { daily: "каждый день", weekly: "каждую неделю", monthly: "каждый месяц" };  // ключи t()
 const FIELD_NAMES = {
@@ -31,9 +39,20 @@ const THEMES = [
 const DONE_RECENT_DAYS = 14;
 const REFRESH_MS = 30_000;
 
+function storedBoardId() {
+  try {
+    return Number(localStorage.getItem("board")) || null;
+  } catch {
+    return null;
+  }
+}
+
 const state = {
   me: null,
-  config: { telegram: false, bot_username: null },
+  config: { telegram: false, bot_username: null, site_title: "" },
+  boards: [],
+  boardId: storedBoardId(),
+  settingsBoardId: null,
   users: [],
   tasks: [],
   stats: [],
@@ -144,6 +163,7 @@ async function showAuth() {
     options = await api("GET", "/api/setup");
   } catch {}
   setupMode = options.needs_setup;
+  applySiteTitle(options.site_title);
   // Первого администратора создают паролем, даже если потом пароли выключат.
   const withPassword = setupMode || options.password_login;
   const withGoogle = !setupMode && options.google;
@@ -197,22 +217,53 @@ $("#logout").addEventListener("click", async () => {
 // ---------- загрузка ----------
 
 async function loadAll() {
-  const [me, users, tasks, stats] = await Promise.all([
+  const [me, users, boards, stats] = await Promise.all([
     api("GET", "/api/me"),
     api("GET", "/api/users"),
-    api("GET", "/api/tasks"),
+    api("GET", "/api/boards"),
     api("GET", "/api/stats"),
   ]);
-  Object.assign(state, { me, users, tasks, stats });
+  // Запомненную доску могли удалить.
+  if (!boards.some((b) => b.id === state.boardId)) state.boardId = boards[0].id;
+  const tasks = await api("GET", `/api/tasks?board_id=${state.boardId}`);
+  Object.assign(state, { me, users, boards, tasks, stats });
   syncTheme();
   syncLang();
   renderAll();
 }
 
+function applySiteTitle(title) {
+  const name = title || t("Доска задач");
+  document.querySelectorAll(".wordmark").forEach((el) => { el.textContent = name; });
+  document.title = name;
+  $('meta[name="apple-mobile-web-app-title"]').setAttribute("content", name);
+}
+
+function renderBoardSelect() {
+  const select = $("#board-select");
+  select.replaceChildren(...state.boards.map((b) => h("option", { value: b.id }, boardName(b))));
+  select.value = state.boardId;
+  select.hidden = state.boards.length < 2;
+}
+
+async function switchBoard(id) {
+  state.boardId = id;
+  try { localStorage.setItem("board", String(id)); } catch {}
+  state.filter.category = "";
+  state.showOldDone = false;
+  await loadAll();
+}
+
+$("#board-select").addEventListener("change", (e) => switchBoard(Number(e.target.value)));
+
 function renderAll() {
+  renderBoardSelect();
+  $("#open-rating").hidden = !pointsOn();
+  $("#open-settings").hidden = !state.me?.is_admin;
   renderPeopleFilter();
   renderCategoryFilter();
   renderBoard();
+  if ($("#settings-dialog").open) renderSettings();
   if ($("#people-dialog").open) {
     renderPeopleList();
     renderTelegramBox();
@@ -233,6 +284,7 @@ async function start() {
   $("#auth").hidden = true;
   $("#app").hidden = false;
   state.config = await api("GET", "/api/config");
+  applySiteTitle(state.config.site_title);
   await loadAll();
 }
 
@@ -311,12 +363,17 @@ function matchesFilter(t) {
 // ---------- доска ----------
 
 const taskById = (id) => state.tasks.find((t) => t.id === id);
-const STATUS_ORDER = Object.fromEntries(COLUMNS.map((c, i) => [c.id, i]));
+const boardName = (board) => board.title || t("Моя доска");
+const currentBoard = () => state.boards.find((b) => b.id === state.boardId) ?? state.boards[0];
+const boardColumns = () => currentBoard()?.columns ?? [];
+const columnById = (id) => boardColumns().find((c) => c.id === id);
+const columnOrder = (task) => boardColumns().findIndex((c) => c.id === task.column_id);
+const pointsOn = () => currentBoard()?.points_enabled !== false;
 
 function childrenOf(id) {
   return state.tasks
     .filter((t) => t.parent_id === id)
-    .sort((a, b) => STATUS_ORDER[a.status] - STATUS_ORDER[b.status] || a.position - b.position);
+    .sort((a, b) => columnOrder(a) - columnOrder(b) || a.position - b.position);
 }
 
 // Незакрытые задачи, которых эта ждёт.
@@ -328,25 +385,25 @@ function openBlockers(task) {
 }
 
 // Правила «предупреждать, а не запрещать»: возвращает текст вопроса или null.
-function statusWarning(task, status) {
-  if (!task || status === task.status) return null;
+function statusWarning(task, column) {
+  if (!task || !column || column.role === task.status) return null;
   const lines = [];
-  if (status === "done") {
+  if (column.role === "done") {
     const open = childrenOf(task.id).filter((c) => c.status !== "done");
     if (open.length) lines.push(t("Не сделаны подзадачи: {list}.", { list: open.map((c) => q(c.title)).join(", ") }));
   }
-  if (status !== "todo") {
+  if (column.role !== "todo") {
     const blockers = openBlockers(task);
     if (blockers.length) lines.push(t("Задача ждёт: {list}.", { list: blockers.map((b) => q(b.title)).join(", ") }));
   }
   return lines.length
-    ? `${lines.join("\n")}\n\n${t("Всё равно перенести {task} в {column}?", { task: q(task.title), column: COLUMN_TITLE[status] })}`
+    ? `${lines.join("\n")}\n\n${t("Всё равно перенести {task} в {column}?", { task: q(task.title), column: column.title })}`
     : null;
 }
 
-function columnTasks(status) {
+function columnTasks(columnId) {
   return state.tasks
-    .filter((t) => t.status === status)
+    .filter((t) => t.column_id === columnId)
     .sort((a, b) => a.position - b.position || a.id - b.id);
 }
 
@@ -358,16 +415,16 @@ function isOldDone(t) {
 function renderBoard() {
   const board = $("#board");
   board.replaceChildren(
-    ...COLUMNS.map((col) => {
+    ...boardColumns().map((col) => {
       let tasks = columnTasks(col.id).filter(matchesFilter);
       let hiddenOld = 0;
-      if (col.id === "done" && !state.showOldDone) {
+      if (col.role === "done" && !state.showOldDone) {
         const recent = tasks.filter((t) => !isOldDone(t));
         hiddenOld = tasks.length - recent.length;
         tasks = recent;
       }
-      const list = h("div", { class: "cards", "data-status": col.id },
-        tasks.length ? tasks.map(renderCard) : h("p", { class: "empty-col" }, t(col.empty)));
+      const list = h("div", { class: "cards", "data-column": col.id },
+        tasks.length ? tasks.map(renderCard) : h("p", { class: "empty-col" }, t(EMPTY_BY_ROLE[col.role])));
       wireDropZone(list);
       return h("section", { class: "column", "aria-label": col.title },
         h("div", { class: "column-head" },
@@ -411,7 +468,7 @@ function renderCard(task) {
   if (task.recurrence !== "none") meta.push(h("span", { class: "tag", title: t("Повторяется") }, `↻ ${t(RECURRENCE[task.recurrence])}`));
   if (task.category) meta.push(h("span", { class: "tag" }, task.category));
   // Очки — последним элементом строки меток: в углу карточки они наезжали на магнит.
-  if (task.points > 1) {
+  if (task.points > 1 && pointsOn()) {
     meta.push(h("span", { class: "points", title: t("{n} {points} за выполнение", { n: task.points, points: pointsWord(task.points) }) }, `+${task.points}`));
   }
 
@@ -474,10 +531,10 @@ function wireDropZone(list) {
     e.preventDefault();
     const id = state.dragId;
     if (id == null) return;
-    const status = list.dataset.status;
+    const column = columnById(Number(list.dataset.column));
     const before = cardAfterPointer(list, e.clientY);
     // Индекс считаем по полной колонке, а не только по видимым после фильтра карточкам.
-    const full = columnTasks(status).map((t) => t.id).filter((x) => x !== id);
+    const full = columnTasks(column.id).map((t) => t.id).filter((x) => x !== id);
     let index;
     if (before) {
       index = full.indexOf(Number(before.dataset.id));
@@ -488,7 +545,7 @@ function wireDropZone(list) {
     }
     state.dragId = null;
     const task = state.tasks.find((t) => t.id === id);
-    const warning = statusWarning(task, status);
+    const warning = statusWarning(task, column);
     if (warning && !confirm(warning)) {
       renderBoard();
       return;
@@ -496,12 +553,13 @@ function wireDropZone(list) {
     const wasDone = task.status === "done";
     // Оптимистично переставляем локально, потом сверяемся с сервером.
     full.splice(index, 0, id);
-    task.status = status;
+    task.column_id = column.id;
+    task.status = column.role;
     full.forEach((tid, pos) => { state.tasks.find((t) => t.id === tid).position = pos; });
     renderBoard();
     try {
-      await api("POST", `/api/tasks/${id}/move`, { status, index });
-      if (status === "done" && !wasDone) celebrate(task);
+      await api("POST", `/api/tasks/${id}/move`, { column_id: column.id, index });
+      if (column.role === "done" && !wasDone) celebrate(task);
     } catch (err) {
       toast(err.message);
     }
@@ -511,7 +569,7 @@ function wireDropZone(list) {
 
 function celebrate(task) {
   const parts = [];
-  if (task.assignee_id && task.points) {
+  if (task.assignee_id && task.points && pointsOn()) {
     parts.push(t("{name}: +{n} {points}", { name: userName(task.assignee_id), n: task.points, points: pointsWord(task.points) }));
   }
   if (task.recurrence !== "none") parts.push(t("следующий повтор добавлен в To Do"));
@@ -523,7 +581,7 @@ function celebrate(task) {
 const taskDialog = $("#task-dialog");
 const taskForm = $("#task-form");
 
-function openTask(task, status = "todo", parentId = null) {
+function openTask(task, columnId = null, parentId = null) {
   state.editingTask = task;
   $("#task-error").textContent = "";
   $("#task-dialog-title").textContent = task ? t("Задача") : t("Новая задача");
@@ -536,17 +594,18 @@ function openTask(task, status = "todo", parentId = null) {
     h("option", { value: "" }, t("Никто")),
     ...state.users.map((u) => h("option", { value: u.id }, u.display_name)),
   );
-  taskForm.status.replaceChildren(...COLUMNS.map((c) => h("option", { value: c.id }, c.title)));
+  taskForm.column_id.replaceChildren(...boardColumns().map((c) => h("option", { value: c.id }, c.title)));
+  $("#points-field").hidden = !pointsOn();
 
   const values = task || {
-    title: "", description: "", status, priority: "normal", category: state.filter.category,
+    title: "", description: "", column_id: columnId ?? boardColumns().find((c) => c.role === "todo")?.id, priority: "normal", category: state.filter.category,
     assignee_id: state.filter.assignee ?? state.me.id, due_date: null, recurrence: "none", points: 1,
     parent_id: parentId,
   };
   taskForm.title.value = values.title;
   taskForm.description.value = values.description;
   taskForm.assignee_id.value = values.assignee_id ?? "";
-  taskForm.status.value = values.status;
+  taskForm.column_id.value = values.column_id;
   taskForm.due_date.value = values.due_date ?? "";
   taskForm.recurrence.value = values.recurrence;
   taskForm.category.value = values.category;
@@ -588,7 +647,7 @@ taskForm.addEventListener("submit", async (e) => {
   const body = {
     title: f.title.value.trim(),
     description: f.description.value,
-    status: f.status.value,
+    column_id: Number(f.column_id.value),
     priority: f.querySelector('input[name="priority"]:checked').value,
     category: f.category.value.trim(),
     assignee_id: f.assignee_id.value ? Number(f.assignee_id.value) : null,
@@ -599,14 +658,15 @@ taskForm.addEventListener("submit", async (e) => {
   // Поле недоступно, если у задачи свои подзадачи: тогда родителя не трогаем.
   if (!f.parent_id.disabled) body.parent_id = f.parent_id.value ? Number(f.parent_id.value) : null;
   const task = state.editingTask;
-  const warning = statusWarning(task, body.status);
+  const column = columnById(body.column_id);
+  const warning = statusWarning(task, column);
   if (warning && !confirm(warning)) return;
   try {
     if (task) {
       await api("PATCH", `/api/tasks/${task.id}`, body);
-      if (task.status !== "done" && body.status === "done") celebrate({ ...task, ...body });
+      if (task.status !== "done" && column.role === "done") celebrate({ ...task, ...body });
     } else {
-      await api("POST", "/api/tasks", { ...body, checklist: state.draftChecklist.map((i) => i.text) });
+      await api("POST", "/api/tasks", { ...body, board_id: state.boardId, checklist: state.draftChecklist.map((i) => i.text) });
     }
     taskDialog.close();
     await loadAll();
@@ -660,7 +720,7 @@ function relRow(task, { before = null, after = null } = {}) {
   return h("li", { class: task.status === "done" ? "done" : "" },
     before,
     h("button", { type: "button", class: "rel-title", onclick: () => switchTask(task) }, task.title),
-    h("span", { class: `status-pill s-${task.status}` }, COLUMN_TITLE[task.status]),
+    h("span", { class: `status-pill s-${task.status}` }, columnById(task.column_id)?.title ?? ""),
     magnet(userById(task.assignee_id), "sm"),
     after,
   );
@@ -697,11 +757,11 @@ function renderRelations() {
   const linked = new Set(task.links.map((l) => l.task_id));
   const targets = state.tasks
     .filter((t) => t.id !== task.id && !linked.has(t.id) && !isOldDone(t))
-    .sort((a, b) => STATUS_ORDER[a.status] - STATUS_ORDER[b.status] || a.title.localeCompare(b.title, LOCALE));
+    .sort((a, b) => columnOrder(a) - columnOrder(b) || a.title.localeCompare(b.title, LOCALE));
   $("#link-target").replaceChildren(
     h("option", { value: "" }, t("Выберите задачу")),
-    ...COLUMNS.map((c) => {
-      const group = targets.filter((t) => t.status === c.id);
+    ...boardColumns().map((c) => {
+      const group = targets.filter((t) => t.column_id === c.id);
       return group.length ? h("optgroup", { label: c.title }, group.map((t) => h("option", { value: t.id }, t.title))) : null;
     }),
   );
@@ -862,7 +922,9 @@ function describeEvent(e) {
     case "created":
       return p.recurring_from ? t("создаёт следующий повтор") : t("создаёт задачу");
     case "status":
-      return t("переносит из {from} в {to}", { from: COLUMN_TITLE[p.from], to: COLUMN_TITLE[p.to] });
+      return t("переносит из {from} в {to}", {
+        from: p.from_title ?? LEGACY_COLUMN_TITLE[p.from], to: p.to_title ?? LEGACY_COLUMN_TITLE[p.to],
+      });
     case "assigned":
       return p.to ? t("назначает исполнителем: {name}", { name: userName(p.to) }) : t("снимает исполнителя");
     case "edited":
@@ -929,7 +991,7 @@ async function renderRating() {
   document.querySelectorAll("#rating-periods button").forEach((b) => {
     b.setAttribute("aria-selected", String(b.dataset.period === state.ratingPeriod));
   });
-  const rows = await api("GET", `/api/leaderboard?period=${state.ratingPeriod}`);
+  const rows = await api("GET", `/api/leaderboard?period=${state.ratingPeriod}&board_id=${state.boardId}`);
   const max = Math.max(1, ...rows.map((r) => r.points));
   $("#rating-list").replaceChildren(
     ...rows.map((r, i) => {
@@ -1085,6 +1147,161 @@ document.querySelectorAll("#lang-choice button, .lang-switch button").forEach((b
 renderLangChoice();
 matchMedia("(prefers-color-scheme: dark)").addEventListener("change", updateThemeColor);
 updateThemeColor();
+
+// ---------- настройки (только администратор) ----------
+
+const settingsDialog = $("#settings-dialog");
+const settingsBoard = () => state.boards.find((b) => b.id === state.settingsBoardId) ?? currentBoard();
+let settingsTasks = [];
+
+// Выполняет изменение и перечитывает доски; ошибку показывает в окне.
+async function settingsAction(action) {
+  $("#settings-error").textContent = "";
+  try {
+    await action();
+    await loadAll();
+    await loadSettingsTasks();
+    renderSettings();
+  } catch (err) {
+    $("#settings-error").textContent = err.message;
+    renderSettings();
+  }
+}
+
+async function loadSettingsTasks() {
+  settingsTasks = await api("GET", `/api/tasks?board_id=${settingsBoard().id}`);
+}
+
+function moveColumn(board, index, delta) {
+  const ids = board.columns.map((c) => c.id);
+  [ids[index], ids[index + delta]] = [ids[index + delta], ids[index]];
+  settingsAction(() => api("PUT", `/api/boards/${board.id}/columns/order`, { ids }));
+}
+
+function deleteColumn(column, moveTo) {
+  const query = moveTo ? `?move_to=${moveTo}` : "";
+  settingsAction(() => api("DELETE", `/api/columns/${column.id}${query}`));
+}
+
+function askDeleteColumn(column, row) {
+  const count = settingsTasks.filter((task) => task.column_id === column.id).length;
+  if (!count) {
+    if (confirm(t("Удалить колонку {column}?", { column: q(column.title) }))) deleteColumn(column);
+    return;
+  }
+  // Задачи вместе с колонкой не удаляются: спрашиваем, куда их перенести.
+  const finished = column.role === "done";
+  const targets = settingsBoard().columns.filter((c) => c.id !== column.id && (c.role === "done") === finished);
+  if (!targets.length) {
+    $("#settings-error").textContent = t("Сначала перенесите задачи из этой колонки");
+    return;
+  }
+  const select = h("select", { "aria-label": t("Куда перенести задачи") }, targets.map((c) => h("option", { value: c.id }, c.title)));
+  row.querySelector(".move-tasks")?.remove();
+  row.append(h("div", { class: "move-tasks" },
+    t("Задач в колонке: {n}. Перенести в:", { n: count }), select,
+    h("button", { type: "button", class: "btn danger-ghost", onclick: () => deleteColumn(column, Number(select.value)) }, t("Удалить")),
+  ));
+}
+
+function renderColumnRow(board, column, index) {
+  const row = h("li", {},
+    h("input", {
+      value: column.title, maxlength: 40, "aria-label": t("Название колонки"),
+      onchange: (e) => {
+        const title = e.target.value.trim();
+        if (title) settingsAction(() => api("PATCH", `/api/columns/${column.id}`, { title }));
+      },
+    }),
+    h("select", {
+      "aria-label": t("Роль колонки"),
+      onchange: (e) => settingsAction(() => api("PATCH", `/api/columns/${column.id}`, { role: e.target.value })),
+    }, ROLES.map((r) => h("option", { value: r.id, selected: r.id === column.role }, t(r.label)))),
+    h("button", { type: "button", class: "icon-btn", title: t("Выше"), "aria-label": t("Выше"), disabled: index === 0, onclick: () => moveColumn(board, index, -1) }, "↑"),
+    h("button", { type: "button", class: "icon-btn", title: t("Ниже"), "aria-label": t("Ниже"), disabled: index === board.columns.length - 1, onclick: () => moveColumn(board, index, 1) }, "↓"),
+    h("button", { type: "button", class: "icon-btn", title: t("Удалить колонку"), "aria-label": t("Удалить колонку"), onclick: () => askDeleteColumn(column, row) }, "×"),
+  );
+  return row;
+}
+
+function renderSettings() {
+  const board = settingsBoard();
+  $("#site-form").site_title.value = state.config.site_title ?? "";
+  $("#boards-list").replaceChildren(...state.boards.map((b) => h("li", { class: b.id === board.id ? "current" : "" },
+    h("button", {
+      type: "button", class: "rel-title",
+      onclick: async () => {
+        state.settingsBoardId = b.id;
+        await loadSettingsTasks();
+        renderSettings();
+      },
+    }, boardName(b)),
+  )));
+  $("#board-editor-title").textContent = boardName(board);
+  $("#board-form").title.value = board.title;
+  $("#board-points").checked = board.points_enabled;
+  $("#board-delete").disabled = state.boards.length < 2;
+  $("#columns-list").replaceChildren(...board.columns.map((c, i) => renderColumnRow(board, c, i)));
+  $("#column-add").role.replaceChildren(...ROLES.map((r) => h("option", { value: r.id, selected: r.id === "in_progress" }, t(r.label))));
+}
+
+$("#open-settings").addEventListener("click", async () => {
+  state.settingsBoardId = state.boardId;
+  $("#settings-error").textContent = "";
+  await loadSettingsTasks();
+  renderSettings();
+  settingsDialog.showModal();
+});
+
+$("#site-form").addEventListener("submit", (e) => {
+  e.preventDefault();
+  settingsAction(async () => {
+    const { site_title } = await api("PUT", "/api/settings", { site_title: e.target.site_title.value });
+    state.config.site_title = site_title;
+    applySiteTitle(site_title);
+  });
+});
+
+$("#board-add").addEventListener("submit", (e) => {
+  e.preventDefault();
+  const form = e.target;
+  settingsAction(async () => {
+    const board = await api("POST", "/api/boards", { title: form.title.value.trim() });
+    form.reset();
+    state.settingsBoardId = board.id;
+  });
+});
+
+$("#board-form").addEventListener("submit", (e) => {
+  e.preventDefault();
+  settingsAction(() => api("PATCH", `/api/boards/${settingsBoard().id}`, { title: e.target.title.value.trim() }));
+});
+
+$("#board-points").addEventListener("change", (e) => {
+  settingsAction(() => api("PATCH", `/api/boards/${settingsBoard().id}`, { points_enabled: e.target.checked }));
+});
+
+$("#column-add").addEventListener("submit", (e) => {
+  e.preventDefault();
+  const form = e.target;
+  settingsAction(async () => {
+    await api("POST", `/api/boards/${settingsBoard().id}/columns`, { title: form.title.value.trim(), role: form.role.value });
+    form.reset();
+  });
+});
+
+$("#board-delete").addEventListener("click", () => {
+  const board = settingsBoard();
+  const count = settingsTasks.length;
+  const message = count
+    ? t("Удалить доску {board} вместе с задачами ({n})? Это нельзя отменить.", { board: q(boardName(board)), n: count })
+    : t("Удалить доску {board}?", { board: q(boardName(board)) });
+  if (!confirm(message)) return;
+  settingsAction(async () => {
+    await api("DELETE", `/api/boards/${board.id}${count ? "?with_tasks=true" : ""}`);
+    state.settingsBoardId = null;
+  });
+});
 
 // ---------- люди ----------
 

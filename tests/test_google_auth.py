@@ -72,8 +72,8 @@ def set_google_email(admin, user_id, email):
 
 def test_setup_reports_login_options(anon, gapp):
     # anon создаётся раньше gapp, до того как в окружении появились настройки Google
-    assert anon.get("/api/setup").json() == {"needs_setup": True, "google": False, "password_login": True}
-    assert TestClient(gapp).get("/api/setup").json() == {"needs_setup": True, "google": True, "password_login": True}
+    assert anon.get("/api/setup").json() == {"needs_setup": True, "google": False, "password_login": True, "site_title": ""}
+    assert TestClient(gapp).get("/api/setup").json() == {"needs_setup": True, "google": True, "password_login": True, "site_title": ""}
 
 
 def test_google_disabled_without_client_id(anon):

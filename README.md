@@ -1,8 +1,8 @@
-# Our Home — a kanban board for household chores
+# Task Board — kanban boards for any kind of work
 
 English | [Русский](README.ru.md)
 
-A shared task board for a family or any small team. Columns To Do, In Progress, Review and Done; tasks are assigned to people, who show up as coloured fridge magnets.
+A self-hosted kanban for a team, a family or any small group. Create several boards, give each its own columns for your process, and assign tasks to people, who show up as coloured magnets.
 
 ## Getting started
 
@@ -38,7 +38,9 @@ cp .env.example .env
 
 ## Features
 
-- **Board** with four columns. Cards are dragged between and within columns, and the order is kept.
+- **Several boards.** An administrator creates boards, and everyone switches between them in the header. Tasks, categories and the leaderboard belong to a board.
+- **Your own columns.** Add, rename, reorder and delete columns per board under Settings. Each column has a role that sets its behaviour: new tasks and repeats land in Start, In progress is for work under way, Review notifies the author, Done closes the task and awards points. A board always keeps at least one Start and one Done column; deleting a column with tasks asks where to move them. Cards are dragged between and within columns, and the order is kept.
+- **Settings for administrators:** the app name, boards, columns, and points on or off per board.
 - **People.** Sign-in with a username and password, or with Google. An administrator adds and removes people and grants administrator rights. Everyone can change their own name, colour and password.
 - **Tasks** with an assignee, due date, priority ("can wait", "normal", "urgent"), category and description.
 - **Recurring chores** (daily, weekly or monthly). When one reaches Done, the next one appears in To Do with the due date moved forward.
@@ -48,7 +50,7 @@ cp .env.example .env
 - **Subtasks.** Split a big task into parts with their own assignees, due dates and points: "Kids' room renovation" → "Buy paint", "Paint the walls". Subtasks are regular cards labelled "↳ Kids' room renovation", and the parent shows progress ("▤ 1/3"). One level only: a subtask has no subtasks of its own. Deleting the parent turns its subtasks into standalone tasks.
 - **Links between tasks:** "waits for" / "blocks" and plain "related to". Cards show what a task is waiting for ("⏳ waits for: Buy paint"). When the last task it waited for reaches Done, the assignee gets "You can start" in Telegram. Cycles ("A waits for B, B waits for A") are rejected. The rules are soft: the board warns before starting a task that is still waiting, or closing one with unfinished subtasks, but doesn't forbid it.
 - **History and comments.** A task shows who created, moved, reassigned and changed it, with a conversation next to it.
-- **Points and leaderboard.** Each task is worth 1 to 8 points, which go to the assignee when it reaches Done. The leaderboard covers the week, the month and all time.
+- **Points and leaderboard** (optional, per board). Each task is worth 1 to 8 points, which go to the assignee when it reaches Done. The leaderboard covers the week, the month and all time.
 - **Stats** under People: open tasks and tasks done this week per person.
 - **A tidy Done column.** Tasks finished more than 14 days ago hide behind "Show older".
 - **English and Russian.** The interface is English by default. Until someone picks a language in their profile (Theme → Language), the board follows the browser: a Russian browser gets the Russian board. The choice is saved in the profile and follows the person across devices. Errors, Telegram notifications and the morning digest come in the same language.
@@ -134,9 +136,15 @@ All endpoints except sign-in, first-time setup and health require the session co
 | GET | `/api/me` | the current user |
 | GET/POST | `/api/users` | list people, add a person (administrator only) |
 | PATCH/DELETE | `/api/users/{id}` | change or delete a person |
-| GET/POST | `/api/tasks` | list tasks (filters `assignee_id`, `category`, `q`) and create one |
+| GET/POST | `/api/boards` | list boards with their columns, create a board (administrator) |
+| PATCH/DELETE | `/api/boards/{id}` | change or delete a board (administrator) |
+| POST | `/api/boards/{id}/columns` | add a column (administrator) |
+| PUT | `/api/boards/{id}/columns/order` | reorder columns (administrator) |
+| PATCH/DELETE | `/api/columns/{id}` | change or delete a column; `?move_to=` says where its tasks go (administrator) |
+| PUT | `/api/settings` | set the app name (administrator) |
+| GET/POST | `/api/tasks` | list tasks (filters `board_id`, `assignee_id`, `category`, `q`) and create one |
 | GET/PATCH/DELETE | `/api/tasks/{id}` | a single task |
-| POST | `/api/tasks/{id}/move` | move `{status, index}` |
+| POST | `/api/tasks/{id}/move` | move `{column_id, index}`; `status` means the first column with that role |
 | POST | `/api/tasks/{id}/links` | link tasks (`blocks`, `blocked_by`, `relates`) |
 | DELETE | `/api/links/{id}` | remove a link |
 | POST | `/api/tasks/{id}/checklist` | add a checklist item |
@@ -144,8 +152,8 @@ All endpoints except sign-in, first-time setup and health require the session co
 | GET | `/api/tasks/{id}/events` | history and comments |
 | POST | `/api/tasks/{id}/comments` | add a comment |
 | DELETE | `/api/events/{id}` | delete a comment (its author or an administrator) |
-| GET | `/api/leaderboard?period=week\|month\|all` | points leaderboard |
-| GET | `/api/config` | whether Telegram is on |
+| GET | `/api/leaderboard?period=week\|month\|all&board_id=` | points leaderboard |
+| GET | `/api/config` | whether Telegram is on, and the app name |
 | POST/DELETE | `/api/me/telegram` | get a link to connect Telegram, or disconnect it |
 | GET | `/api/categories` | list of categories |
 | GET | `/api/stats` | per-person stats |

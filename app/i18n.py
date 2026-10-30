@@ -44,6 +44,23 @@ EN = {
     "Эта Google-почта уже привязана к другому человеку": "This Google address is already assigned to someone else",
     "Это может сделать только администратор": "Only an administrator can do this",
 
+    "Родительская задача на другой доске": "The parent task is on another board",
+    "На этой доске нет колонки с такой ролью": "This board has no column with that role",
+    "На этой доске нет такой колонки": "This board has no such column",
+    "Доска не найдена": "Board not found",
+    "Колонка не найдена": "Column not found",
+    "На доске должна остаться хотя бы одна начальная колонка и одна «Готово»":
+        "A board must keep at least one start column and one Done column",
+    "Нельзя удалить последнюю доску": "You cannot delete the last board",
+    "На доске есть задачи": "The board has tasks",
+    "Порядок должен перечислять все колонки доски": "The order must list every column of the board",
+    "Сначала перенесите задачи из этой колонки": "Move the tasks out of this column first",
+    "В колонке есть задачи: выберите, куда их перенести на этой доске":
+        "The column has tasks: choose where to move them on this board",
+    "Задачи можно перенести только в колонку с той же завершённостью":
+        "Tasks can only move to a column that is equally finished",
+    "Связывать можно только задачи одной доски": "Only tasks on the same board can be linked",
+
     # --- уведомления ---
     "📌 {actor} поручает вам: {task}": "📌 {actor} assigned you: {task}",
     "Срок: {date}": "Due: {date}",
@@ -68,6 +85,7 @@ EN = {
         "Notifications are off. You can connect again in your profile on the board.",
     "Открытых задач нет. Отдыхайте 🙂": "No open tasks. Time to rest 🙂",
     "Ваши задачи:": "Your tasks:",
+    "Моя доска": "My board",
     " — до {date}": " — due {date}",
     "☀️ Доброе утро! Вот что на сегодня.": "☀️ Good morning! Here is what's on for today.",
     "Сегодня": "Today",

@@ -15,7 +15,6 @@ from .i18n import MONTHS, normalize_lang, tr
 
 log = logging.getLogger("telegram")
 
-STATUS_TITLES = {"todo": "To Do", "in_progress": "In Progress", "review": "Review", "done": "Done"}
 def help_text(lang: str) -> str:
     return "\n".join([
         tr("Я присылаю уведомления с доски задач.", lang),
@@ -101,18 +100,24 @@ def task_line(t: sqlite3.Row, lang: str) -> str:
 
 def my_tasks_text(conn: sqlite3.Connection, user_id: int, lang: str) -> str:
     rows = conn.execute(
-        """SELECT * FROM tasks WHERE assignee_id = ? AND status != 'done'
-           ORDER BY CASE status WHEN 'in_progress' THEN 0 WHEN 'review' THEN 1 ELSE 2 END,
-                    due_date IS NULL, due_date, position""",
+        """SELECT t.*, c.title AS column_title, b.title AS board_title
+           FROM tasks t JOIN board_columns c ON c.id = t.column_id JOIN boards b ON b.id = t.board_id
+           WHERE t.assignee_id = ? AND t.status != 'done'
+           ORDER BY b.position, b.id,
+                    CASE t.status WHEN 'in_progress' THEN 0 WHEN 'review' THEN 1 ELSE 2 END,
+                    c.position, t.due_date IS NULL, t.due_date, t.position""",
         (user_id,),
     ).fetchall()
     if not rows:
         return tr("Открытых задач нет. Отдыхайте 🙂", lang)
+    several_boards = len({t["board_id"] for t in rows}) > 1
     parts, current = [], None
     for t in rows:
-        if t["status"] != current:
-            current = t["status"]
-            parts.append(f"\n<b>{STATUS_TITLES[current]}</b>")
+        if t["column_id"] != current:
+            current = t["column_id"]
+            board = escape(t["board_title"]) or tr("Моя доска", lang)
+            column = escape(t["column_title"])
+            parts.append(f"\n<b>{board}: {column}</b>" if several_boards else f"\n<b>{column}</b>")
         parts.append(task_line(t, lang))
     return tr("Ваши задачи:", lang) + "\n".join(parts)
 

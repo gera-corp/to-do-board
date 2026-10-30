@@ -32,7 +32,9 @@ OAUTH_COOKIE_PATH = "/api/auth/google"
 OAUTH_STATE_MINUTES = 10
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
+# Роль колонки определяет поведение задач в ней; название колонки — свободное.
 Status = Literal["todo", "in_progress", "review", "done"]
+DEFAULT_COLUMNS = (("To Do", "todo"), ("In Progress", "in_progress"), ("Review", "review"), ("Done", "done"))
 Priority = Literal["low", "normal", "high"]
 Recurrence = Literal["none", "daily", "weekly", "monthly"]
 Theme = Literal["auto", "light", "dark", "mint", "kraft", "midnight", "contrast"]
@@ -92,7 +94,10 @@ class LoginIn(BaseModel):
 class TaskCreate(BaseModel):
     title: str = Field(min_length=1, max_length=200)
     description: str = Field(default="", max_length=5000)
-    status: Status = "todo"
+    board_id: Optional[int] = None
+    column_id: Optional[int] = None
+    # Вместо column_id можно указать роль: задача попадёт в первую колонку с этой ролью.
+    status: Optional[Status] = None
     priority: Priority = "normal"
     category: str = Field(default="", max_length=40)
     assignee_id: Optional[int] = None
@@ -111,6 +116,7 @@ class TaskCreate(BaseModel):
 class TaskUpdate(BaseModel):
     title: Optional[str] = Field(default=None, min_length=1, max_length=200)
     description: Optional[str] = Field(default=None, max_length=5000)
+    column_id: Optional[int] = None
     status: Optional[Status] = None
     priority: Optional[Priority] = None
     category: Optional[str] = Field(default=None, max_length=40)
@@ -128,8 +134,37 @@ class LinkIn(BaseModel):
 
 
 class MoveIn(BaseModel):
-    status: Status
+    column_id: Optional[int] = None
+    status: Optional[Status] = None
     index: int = Field(ge=0)
+
+
+class BoardCreate(BaseModel):
+    title: str = Field(min_length=1, max_length=80)
+    points_enabled: bool = True
+
+
+class BoardUpdate(BaseModel):
+    title: Optional[str] = Field(default=None, min_length=1, max_length=80)
+    points_enabled: Optional[bool] = None
+
+
+class ColumnCreate(BaseModel):
+    title: str = Field(min_length=1, max_length=40)
+    role: Status
+
+
+class ColumnUpdate(BaseModel):
+    title: Optional[str] = Field(default=None, min_length=1, max_length=40)
+    role: Optional[Status] = None
+
+
+class ColumnOrder(BaseModel):
+    ids: list[int]
+
+
+class SettingsIn(BaseModel):
+    site_title: str = Field(max_length=60)
 
 
 class TextIn(BaseModel):
@@ -208,17 +243,20 @@ def tasks_out(conn: sqlite3.Connection, rows: list[sqlite3.Row]) -> list[dict]:
     return tasks
 
 
-def validate_parent(conn: sqlite3.Connection, task_id: Optional[int], parent_id: Optional[int]) -> None:
-    """Подзадачи — ровно один уровень: у подзадачи нет своих подзадач."""
+def validate_parent(conn: sqlite3.Connection, task_id: Optional[int], parent_id: Optional[int],
+                    board_id: Optional[int] = None) -> None:
+    """Подзадачи — ровно один уровень и на той же доске, что и родитель."""
     if parent_id is None:
         return
     if parent_id == task_id:
         raise HTTPException(400, "Задача не может быть подзадачей самой себя")
-    parent = conn.execute("SELECT parent_id FROM tasks WHERE id = ?", (parent_id,)).fetchone()
+    parent = conn.execute("SELECT parent_id, board_id FROM tasks WHERE id = ?", (parent_id,)).fetchone()
     if parent is None:
         raise HTTPException(400, "Родительской задачи нет")
     if parent["parent_id"] is not None:
         raise HTTPException(400, "Подзадачи бывают только одного уровня: выбрана сама подзадача")
+    if board_id is not None and parent["board_id"] != board_id:
+        raise HTTPException(400, "Родительская задача на другой доске")
     if task_id is not None and conn.execute(
         "SELECT 1 FROM tasks WHERE parent_id = ? LIMIT 1", (task_id,)
     ).fetchone():
@@ -257,12 +295,65 @@ def ensure_user_exists(conn: sqlite3.Connection, user_id: Optional[int]) -> None
         raise HTTPException(400, "Такого пользователя нет")
 
 
-def column_ids(conn: sqlite3.Connection, status: str, exclude: int) -> list[int]:
+def column_ids(conn: sqlite3.Connection, column_id: int, exclude: int) -> list[int]:
     rows = conn.execute(
-        "SELECT id FROM tasks WHERE status = ? AND id != ? ORDER BY position, id",
-        (status, exclude),
+        "SELECT id FROM tasks WHERE column_id = ? AND id != ? ORDER BY position, id",
+        (column_id, exclude),
     ).fetchall()
     return [r["id"] for r in rows]
+
+
+def get_column(conn: sqlite3.Connection, column_id: Optional[int]) -> Optional[sqlite3.Row]:
+    return conn.execute("SELECT * FROM board_columns WHERE id = ?", (column_id,)).fetchone()
+
+
+def default_board_id(conn: sqlite3.Connection) -> int:
+    return conn.execute("SELECT id FROM boards ORDER BY position, id LIMIT 1").fetchone()["id"]
+
+
+def first_column(conn: sqlite3.Connection, board_id: int, role: str) -> sqlite3.Row:
+    row = conn.execute(
+        "SELECT * FROM board_columns WHERE board_id = ? AND role = ? ORDER BY position, id LIMIT 1",
+        (board_id, role),
+    ).fetchone()
+    if row is None:
+        raise HTTPException(400, "На этой доске нет колонки с такой ролью")
+    return row
+
+
+def resolve_column(conn: sqlite3.Connection, board_id: int, column_id: Optional[int],
+                   status: Optional[str]) -> sqlite3.Row:
+    """Колонка на доске: по id либо первая с нужной ролью."""
+    if column_id is None:
+        return first_column(conn, board_id, status or "todo")
+    column = get_column(conn, column_id)
+    if column is None or column["board_id"] != board_id:
+        raise HTTPException(400, "На этой доске нет такой колонки")
+    return column
+
+
+def boards_out(conn: sqlite3.Connection) -> list[dict]:
+    columns = conn.execute("SELECT * FROM board_columns ORDER BY position, id").fetchall()
+    return [
+        {
+            "id": b["id"], "title": b["title"], "points_enabled": bool(b["points_enabled"]),
+            "position": b["position"],
+            "columns": [{k: c[k] for k in c.keys()} for c in columns if c["board_id"] == b["id"]],
+        }
+        for b in conn.execute("SELECT * FROM boards ORDER BY position, id").fetchall()
+    ]
+
+
+def board_out(conn: sqlite3.Connection, board_id: int) -> dict:
+    for board in boards_out(conn):
+        if board["id"] == board_id:
+            return board
+    raise HTTPException(404, "Доска не найдена")
+
+
+def get_setting(conn: sqlite3.Connection, key: str, default: str = "") -> str:
+    row = conn.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
+    return row["value"] if row else default
 
 
 def write_order(conn: sqlite3.Connection, ids: list[int]) -> None:
@@ -336,12 +427,26 @@ def notify_assigned(ctx: Ctx, task) -> None:
     ctx.notify([task["assignee_id"]], render)
 
 
-def change_status(ctx: Ctx, task_id: int, old: str, new: str) -> None:
-    """Последствия смены колонки: история, время выполнения, уведомления и следующий повтор."""
+def place_task(ctx: Ctx, task: sqlite3.Row, column: sqlite3.Row, index: Optional[int] = None) -> None:
+    """Ставит задачу в колонку на нужное место (по умолчанию в конец)."""
+    conn = ctx.conn
+    ids = column_ids(conn, column["id"], exclude=task["id"])
+    ids.insert(len(ids) if index is None else min(index, len(ids)), task["id"])
+    conn.execute("UPDATE tasks SET column_id = ?, status = ? WHERE id = ?", (column["id"], column["role"], task["id"]))
+    write_order(conn, ids)
+    if column["id"] != task["column_id"]:
+        write_order(conn, column_ids(conn, task["column_id"], exclude=task["id"]))
+        conn.execute("UPDATE tasks SET updated_at = ? WHERE id = ?", (now_iso(), task["id"]))
+        change_status(ctx, task["id"], get_column(conn, task["column_id"]), column)
+
+
+def change_status(ctx: Ctx, task_id: int, old_column: sqlite3.Row, column: sqlite3.Row) -> None:
+    """Последствия переноса: история; при смене роли — время выполнения, уведомления, повтор."""
+    conn = ctx.conn
+    old, new = old_column["role"], column["role"]
+    ctx.log(task_id, "status", **{"from": old, "to": new, "from_title": old_column["title"], "to_title": column["title"]})
     if new == old:
         return
-    conn = ctx.conn
-    ctx.log(task_id, "status", **{"from": old, "to": new})
     task = get_task_row(conn, task_id)
 
     if new != "done":
@@ -352,7 +457,8 @@ def change_status(ctx: Ctx, task_id: int, old: str, new: str) -> None:
         return
 
     conn.execute("UPDATE tasks SET completed_at = ? WHERE id = ?", (now_iso(), task_id))
-    pts = task["points"] if task["assignee_id"] else 0
+    board = conn.execute("SELECT points_enabled FROM boards WHERE id = ?", (task["board_id"],)).fetchone()
+    pts = task["points"] if task["assignee_id"] and board["points_enabled"] else 0
 
     def render(lang: str) -> str:
         text = tr("✅ Сделано: {task}", lang, task=quoted(task))
@@ -396,13 +502,16 @@ def spawn_next(ctx: Ctx, task: sqlite3.Row) -> None:
 
     # Повтор переезжает на новую копию, чтобы повторное «Готово» не плодило дубли.
     conn.execute("UPDATE tasks SET recurrence = 'none' WHERE id = ?", (task["id"],))
+    start = first_column(conn, task["board_id"], "todo")
     cur = conn.execute(
         """INSERT INTO tasks (title, description, status, priority, category, assignee_id,
-                              creator_id, due_date, recurrence, points, position, parent_id)
-           VALUES (?, ?, 'todo', ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                              creator_id, due_date, recurrence, points, position, parent_id,
+                              board_id, column_id)
+           VALUES (?, ?, 'todo', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (task["title"], task["description"], task["priority"], task["category"],
          task["assignee_id"], task["creator_id"], due.isoformat(), task["recurrence"],
-         task["points"], next_position(conn, "tasks", "status", "todo"), task["parent_id"]),
+         task["points"], next_position(conn, "tasks", "column_id", start["id"]), task["parent_id"],
+         task["board_id"], start["id"]),
     )
     items = conn.execute(
         "SELECT text FROM checklist_items WHERE task_id = ? ORDER BY position, id", (task["id"],)
@@ -470,7 +579,7 @@ def create_app(db_path: Optional[str] = None, notifier=None) -> FastAPI:
         yield
         notifier.stop()
 
-    app = FastAPI(title="Домашний канбан", lifespan=lifespan)
+    app = FastAPI(title="Task Board", lifespan=lifespan)
 
     # Ошибки API — на языке интерфейса, который клиент передаёт в Accept-Language.
     @app.exception_handler(StarletteHTTPException)
@@ -565,7 +674,8 @@ def create_app(db_path: Optional[str] = None, notifier=None) -> FastAPI:
     @app.get("/api/setup")
     def setup_status(conn: sqlite3.Connection = Conn):
         count = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
-        return {"needs_setup": count == 0, "google": google_enabled, "password_login": password_login}
+        return {"needs_setup": count == 0, "google": google_enabled, "password_login": password_login,
+                "site_title": get_setting(conn, "site_title")}
 
     @app.post("/api/setup", status_code=201)
     def setup(data: UserCreate, response: Response, conn: sqlite3.Connection = Conn):
@@ -675,8 +785,9 @@ def create_app(db_path: Optional[str] = None, notifier=None) -> FastAPI:
         return user_out(user)
 
     @app.get("/api/config")
-    def config(_: sqlite3.Row = Depends(current_user)):
-        return {"telegram": notifier.enabled, "bot_username": notifier.bot_username}
+    def config(ctx: Ctx = Depends(get_ctx)):
+        return {"telegram": notifier.enabled, "bot_username": notifier.bot_username,
+                "site_title": get_setting(ctx.conn, "site_title")}
 
     # --- Telegram ---
 
@@ -750,9 +861,12 @@ def create_app(db_path: Optional[str] = None, notifier=None) -> FastAPI:
     # --- задачи ---
 
     @app.get("/api/tasks")
-    def list_tasks(assignee_id: Optional[int] = None, category: Optional[str] = None,
-                   q: Optional[str] = None, ctx: Ctx = Depends(get_ctx)):
+    def list_tasks(board_id: Optional[int] = None, assignee_id: Optional[int] = None,
+                   category: Optional[str] = None, q: Optional[str] = None, ctx: Ctx = Depends(get_ctx)):
         where, params = [], []
+        if board_id is not None:
+            where.append("board_id = ?")
+            params.append(board_id)
         if assignee_id is not None:
             where.append("assignee_id = ?")
             params.append(assignee_id)
@@ -765,7 +879,7 @@ def create_app(db_path: Optional[str] = None, notifier=None) -> FastAPI:
         sql = "SELECT * FROM tasks"
         if where:
             sql += " WHERE " + " AND ".join(where)
-        sql += " ORDER BY status, position, id"
+        sql += " ORDER BY board_id, column_id, position, id"
         return tasks_out(ctx.conn, ctx.conn.execute(sql, params).fetchall())
 
     @app.get("/api/tasks/{task_id}")
@@ -776,17 +890,28 @@ def create_app(db_path: Optional[str] = None, notifier=None) -> FastAPI:
     def create_task(data: TaskCreate, ctx: Ctx = Depends(get_ctx)):
         conn = ctx.conn
         ensure_user_exists(conn, data.assignee_id)
-        validate_parent(conn, None, data.parent_id)
+        board_id = data.board_id
+        if board_id is None and data.parent_id is not None:
+            parent = conn.execute("SELECT board_id FROM tasks WHERE id = ?", (data.parent_id,)).fetchone()
+            board_id = parent["board_id"] if parent else None
+        if board_id is None and data.column_id is not None:
+            given = get_column(conn, data.column_id)
+            board_id = given["board_id"] if given else None
+        if board_id is None:
+            board_id = default_board_id(conn)
+        board_out(conn, board_id)  # 404, если такой доски нет
+        column = resolve_column(conn, board_id, data.column_id, data.status)
+        validate_parent(conn, None, data.parent_id, board_id)
         cur = conn.execute(
             """INSERT INTO tasks (title, description, status, priority, category, assignee_id,
                                   creator_id, due_date, recurrence, points, position, completed_at,
-                                  parent_id)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (data.title.strip(), data.description, data.status, data.priority,
+                                  parent_id, board_id, column_id)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (data.title.strip(), data.description, column["role"], data.priority,
              data.category.strip(), data.assignee_id, ctx.user["id"],
              data.due_date.isoformat() if data.due_date else None, data.recurrence, data.points,
-             next_position(conn, "tasks", "status", data.status),
-             now_iso() if data.status == "done" else None, data.parent_id),
+             next_position(conn, "tasks", "column_id", column["id"]),
+             now_iso() if column["role"] == "done" else None, data.parent_id, board_id, column["id"]),
         )
         task_id = cur.lastrowid
         add_checklist(conn, task_id, data.checklist)
@@ -801,7 +926,7 @@ def create_app(db_path: Optional[str] = None, notifier=None) -> FastAPI:
         conn = ctx.conn
         task = get_task_row(conn, task_id)
         changes = data.model_dump(exclude_unset=True)
-        for required in ("title", "description", "status", "priority", "category", "recurrence", "points"):
+        for required in ("title", "description", "status", "column_id", "priority", "category", "recurrence", "points"):
             if required in changes and changes[required] is None:
                 raise HTTPException(422, {"msg": "Поле {field} не может быть пустым", "params": {"field": required}})
         if "assignee_id" in changes:
@@ -814,9 +939,11 @@ def create_app(db_path: Optional[str] = None, notifier=None) -> FastAPI:
         # В базу и историю попадает только то, что действительно поменялось.
         changes = {k: v for k, v in changes.items() if task[k] != v}
         if "parent_id" in changes:
-            validate_parent(conn, task_id, changes["parent_id"])
+            validate_parent(conn, task_id, changes["parent_id"], task["board_id"])
 
-        new_status = changes.pop("status", task["status"])
+        role = changes.pop("status", None)
+        target_id = changes.pop("column_id", None)
+        column = resolve_column(conn, task["board_id"], target_id, role) if target_id or role else None
         if changes:
             cols = ", ".join(f"{k} = ?" for k in changes)
             conn.execute(f"UPDATE tasks SET {cols} WHERE id = ?", (*changes.values(), task_id))
@@ -827,13 +954,9 @@ def create_app(db_path: Optional[str] = None, notifier=None) -> FastAPI:
         edited = [k for k in EDITABLE_FIELDS if k in changes]
         if edited:
             ctx.log(task_id, "edited", fields=edited)
-        if new_status != task["status"]:
-            conn.execute(
-                "UPDATE tasks SET status = ?, position = ? WHERE id = ?",
-                (new_status, next_position(conn, "tasks", "status", new_status), task_id),
-            )
-            change_status(ctx, task_id, task["status"], new_status)
-        if changes or new_status != task["status"]:
+        if column is not None and column["id"] != task["column_id"]:
+            place_task(ctx, task, column)
+        if changes:
             conn.execute("UPDATE tasks SET updated_at = ? WHERE id = ?", (now_iso(), task_id))
         return task_full(conn, task_id)
 
@@ -841,14 +964,11 @@ def create_app(db_path: Optional[str] = None, notifier=None) -> FastAPI:
     def move_task(task_id: int, data: MoveIn, ctx: Ctx = Depends(get_ctx)):
         conn = ctx.conn
         task = get_task_row(conn, task_id)
-        ids = column_ids(conn, data.status, exclude=task_id)
-        ids.insert(min(data.index, len(ids)), task_id)
-        conn.execute("UPDATE tasks SET status = ? WHERE id = ?", (data.status, task_id))
-        write_order(conn, ids)
-        if data.status != task["status"]:
-            write_order(conn, column_ids(conn, task["status"], exclude=task_id))
-            conn.execute("UPDATE tasks SET updated_at = ? WHERE id = ?", (now_iso(), task_id))
-            change_status(ctx, task_id, task["status"], data.status)
+        if data.column_id is None and data.status == task["status"]:
+            column = get_column(conn, task["column_id"])  # та же роль — остаётся в своей колонке
+        else:
+            column = resolve_column(conn, task["board_id"], data.column_id, data.status)
+        place_task(ctx, task, column, data.index)
         return task_full(conn, task_id)
 
     @app.delete("/api/tasks/{task_id}", status_code=204)
@@ -856,16 +976,148 @@ def create_app(db_path: Optional[str] = None, notifier=None) -> FastAPI:
         if ctx.conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,)).rowcount == 0:
             raise HTTPException(404, "Задача не найдена")
 
+    # --- доски и колонки (меняет только администратор) ---
+
+    def get_board_row(conn: sqlite3.Connection, board_id: int) -> sqlite3.Row:
+        row = conn.execute("SELECT * FROM boards WHERE id = ?", (board_id,)).fetchone()
+        if row is None:
+            raise HTTPException(404, "Доска не найдена")
+        return row
+
+    def require_column(conn: sqlite3.Connection, column_id: int) -> sqlite3.Row:
+        column = get_column(conn, column_id)
+        if column is None:
+            raise HTTPException(404, "Колонка не найдена")
+        return column
+
+    def ensure_required_role_stays(conn: sqlite3.Connection, column: sqlite3.Row) -> None:
+        """Без начальной колонки некуда класть задачи, без «Готово» их нельзя закрыть."""
+        if column["role"] not in ("todo", "done"):
+            return
+        same_role = conn.execute(
+            "SELECT COUNT(*) FROM board_columns WHERE board_id = ? AND role = ?",
+            (column["board_id"], column["role"]),
+        ).fetchone()[0]
+        if same_role <= 1:
+            raise HTTPException(400, "На доске должна остаться хотя бы одна начальная колонка и одна «Готово»")
+
+    def column_has_tasks(conn: sqlite3.Connection, column_id: int) -> bool:
+        return conn.execute("SELECT 1 FROM tasks WHERE column_id = ? LIMIT 1", (column_id,)).fetchone() is not None
+
+    @app.get("/api/boards")
+    def list_boards(ctx: Ctx = Depends(get_ctx)):
+        return boards_out(ctx.conn)
+
+    @app.post("/api/boards", status_code=201)
+    def create_board(data: BoardCreate, _: sqlite3.Row = Depends(admin_user), conn: sqlite3.Connection = Conn):
+        position = conn.execute("SELECT COALESCE(MAX(position), -1) + 1 FROM boards").fetchone()[0]
+        cur = conn.execute(
+            "INSERT INTO boards (title, points_enabled, position) VALUES (?, ?, ?)",
+            (data.title.strip(), int(data.points_enabled), position),
+        )
+        conn.executemany(
+            "INSERT INTO board_columns (board_id, title, role, position) VALUES (?, ?, ?, ?)",
+            [(cur.lastrowid, title, role, i) for i, (title, role) in enumerate(DEFAULT_COLUMNS)],
+        )
+        return board_out(conn, cur.lastrowid)
+
+    @app.patch("/api/boards/{board_id}")
+    def update_board(board_id: int, data: BoardUpdate, _: sqlite3.Row = Depends(admin_user),
+                     conn: sqlite3.Connection = Conn):
+        get_board_row(conn, board_id)
+        if data.title is not None:
+            conn.execute("UPDATE boards SET title = ? WHERE id = ?", (data.title.strip(), board_id))
+        if data.points_enabled is not None:
+            conn.execute("UPDATE boards SET points_enabled = ? WHERE id = ?", (int(data.points_enabled), board_id))
+        return board_out(conn, board_id)
+
+    @app.delete("/api/boards/{board_id}", status_code=204)
+    def delete_board(board_id: int, with_tasks: bool = False, _: sqlite3.Row = Depends(admin_user),
+                     conn: sqlite3.Connection = Conn):
+        get_board_row(conn, board_id)
+        if conn.execute("SELECT COUNT(*) FROM boards").fetchone()[0] <= 1:
+            raise HTTPException(400, "Нельзя удалить последнюю доску")
+        has_tasks = conn.execute("SELECT 1 FROM tasks WHERE board_id = ? LIMIT 1", (board_id,)).fetchone()
+        if has_tasks and not with_tasks:
+            raise HTTPException(409, "На доске есть задачи")
+        conn.execute("DELETE FROM tasks WHERE board_id = ?", (board_id,))
+        conn.execute("DELETE FROM boards WHERE id = ?", (board_id,))
+
+    @app.post("/api/boards/{board_id}/columns", status_code=201)
+    def create_column(board_id: int, data: ColumnCreate, _: sqlite3.Row = Depends(admin_user),
+                      conn: sqlite3.Connection = Conn):
+        get_board_row(conn, board_id)
+        position = next_position(conn, "board_columns", "board_id", board_id)
+        cur = conn.execute(
+            "INSERT INTO board_columns (board_id, title, role, position) VALUES (?, ?, ?, ?)",
+            (board_id, data.title.strip(), data.role, position),
+        )
+        return dict(get_column(conn, cur.lastrowid))
+
+    @app.put("/api/boards/{board_id}/columns/order")
+    def order_columns(board_id: int, data: ColumnOrder, _: sqlite3.Row = Depends(admin_user),
+                      conn: sqlite3.Connection = Conn):
+        current = {c["id"] for c in board_out(conn, board_id)["columns"]}
+        if len(data.ids) != len(current) or set(data.ids) != current:
+            raise HTTPException(400, "Порядок должен перечислять все колонки доски")
+        conn.executemany("UPDATE board_columns SET position = ? WHERE id = ?",
+                         [(i, cid) for i, cid in enumerate(data.ids)])
+        return board_out(conn, board_id)
+
+    @app.patch("/api/columns/{column_id}")
+    def update_column(column_id: int, data: ColumnUpdate, _: sqlite3.Row = Depends(admin_user),
+                      conn: sqlite3.Connection = Conn):
+        column = require_column(conn, column_id)
+        if data.title is not None:
+            conn.execute("UPDATE board_columns SET title = ? WHERE id = ?", (data.title.strip(), column_id))
+        if data.role is not None and data.role != column["role"]:
+            ensure_required_role_stays(conn, column)
+            # Иначе задачи закрылись бы (или открылись) без переноса: без очков, повторов и истории.
+            if "done" in (data.role, column["role"]) and column_has_tasks(conn, column_id):
+                raise HTTPException(400, "Сначала перенесите задачи из этой колонки")
+            conn.execute("UPDATE board_columns SET role = ? WHERE id = ?", (data.role, column_id))
+            conn.execute("UPDATE tasks SET status = ? WHERE column_id = ?", (data.role, column_id))
+        return dict(get_column(conn, column_id))
+
+    @app.delete("/api/columns/{column_id}", status_code=204)
+    def delete_column(column_id: int, move_to: Optional[int] = None, ctx: Ctx = Depends(get_ctx),
+                      _: sqlite3.Row = Depends(admin_user)):
+        conn = ctx.conn
+        column = require_column(conn, column_id)
+        ensure_required_role_stays(conn, column)
+        if column_has_tasks(conn, column_id):
+            target = get_column(conn, move_to) if move_to is not None else None
+            if target is None or target["id"] == column_id or target["board_id"] != column["board_id"]:
+                raise HTTPException(400, "В колонке есть задачи: выберите, куда их перенести на этой доске")
+            if (target["role"] == "done") != (column["role"] == "done"):
+                raise HTTPException(400, "Задачи можно перенести только в колонку с той же завершённостью")
+            for task in conn.execute("SELECT * FROM tasks WHERE column_id = ? ORDER BY position, id", (column_id,)).fetchall():
+                place_task(ctx, task, target)
+        conn.execute("DELETE FROM board_columns WHERE id = ?", (column_id,))
+
+    @app.put("/api/settings")
+    def update_settings(data: SettingsIn, _: sqlite3.Row = Depends(admin_user), conn: sqlite3.Connection = Conn):
+        title = data.site_title.strip()
+        conn.execute(
+            "INSERT INTO settings (key, value) VALUES ('site_title', ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (title,),
+        )
+        return {"site_title": title}
+
     # --- связи между задачами ---
 
     @app.post("/api/tasks/{task_id}/links", status_code=201)
     def add_link(task_id: int, data: LinkIn, ctx: Ctx = Depends(get_ctx)):
         conn = ctx.conn
-        get_task_row(conn, task_id)
+        task = get_task_row(conn, task_id)
         if data.task_id == task_id:
             raise HTTPException(400, "Задачу нельзя связать с самой собой")
-        if conn.execute("SELECT 1 FROM tasks WHERE id = ?", (data.task_id,)).fetchone() is None:
+        other = conn.execute("SELECT board_id FROM tasks WHERE id = ?", (data.task_id,)).fetchone()
+        if other is None:
             raise HTTPException(400, "Такой задачи нет")
+        if other["board_id"] != task["board_id"]:
+            raise HTTPException(400, "Связывать можно только задачи одной доски")
 
         if data.kind == "relates":
             kind, frm, to = "relates", min(task_id, data.task_id), max(task_id, data.task_id)
@@ -961,9 +1213,11 @@ def create_app(db_path: Optional[str] = None, notifier=None) -> FastAPI:
     # --- справочники и статистика ---
 
     @app.get("/api/categories")
-    def categories(ctx: Ctx = Depends(get_ctx)):
+    def categories(board_id: Optional[int] = None, ctx: Ctx = Depends(get_ctx)):
         rows = ctx.conn.execute(
-            "SELECT DISTINCT category FROM tasks WHERE category != '' ORDER BY category COLLATE NOCASE"
+            """SELECT DISTINCT category FROM tasks WHERE category != '' AND (? IS NULL OR board_id = ?)
+               ORDER BY category COLLATE NOCASE""",
+            (board_id, board_id),
         ).fetchall()
         return [r["category"] for r in rows]
 
@@ -982,14 +1236,18 @@ def create_app(db_path: Optional[str] = None, notifier=None) -> FastAPI:
                 for r in rows]
 
     @app.get("/api/leaderboard")
-    def leaderboard(period: Literal["week", "month", "all"] = "week", ctx: Ctx = Depends(get_ctx)):
+    def leaderboard(period: Literal["week", "month", "all"] = "week", board_id: Optional[int] = None,
+                    ctx: Ctx = Depends(get_ctx)):
+        # Доски с выключенными очками в рейтинг не входят.
         rows = ctx.conn.execute(
             """SELECT u.id AS user_id, COALESCE(SUM(t.points), 0) AS points, COUNT(t.id) AS done
                FROM users u
                LEFT JOIN tasks t ON t.assignee_id = u.id AND t.status = 'done' AND t.completed_at >= ?
+                    AND (? IS NULL OR t.board_id = ?)
+                    AND t.board_id IN (SELECT id FROM boards WHERE points_enabled = 1)
                GROUP BY u.id
                ORDER BY points DESC, done DESC, u.display_name COLLATE NOCASE""",
-            (period_start(period),),
+            (period_start(period), board_id, board_id),
         ).fetchall()
         return [dict(r) for r in rows]
 
@@ -1003,11 +1261,14 @@ def create_app(db_path: Optional[str] = None, notifier=None) -> FastAPI:
     manifest_template = json.loads((STATIC_DIR / "manifest.webmanifest").read_text(encoding="utf-8"))
 
     @app.get("/manifest.webmanifest", include_in_schema=False)
-    def manifest(request: Request):
+    def manifest(request: Request, conn: sqlite3.Connection = Conn):
         data = dict(manifest_template)
         if normalize_lang(request.headers.get("accept-language")) == "en":
-            data.update(name="Our Home", short_name="Our Home", description="Kanban board for household chores",
+            data.update(name="Task Board", short_name="Task Board", description="Kanban board for any kind of work",
                         lang="en")
+        title = get_setting(conn, "site_title")
+        if title:
+            data.update(name=title, short_name=title)
         return JSONResponse(data, media_type="application/manifest+json")
 
     @app.get("/sw.js", include_in_schema=False)

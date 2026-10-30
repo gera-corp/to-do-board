@@ -18,7 +18,7 @@ const SHELL_FILES = [
   "/icons/icon-192.png",
 ];
 // Сохраняются только ответы на чтение доски.
-const CACHEABLE_API = /^\/api\/(me|config|users|tasks|stats|leaderboard)(\/|\?|$)/;
+const CACHEABLE_API = /^\/api\/(me|config|users|boards|tasks|stats|leaderboard)(\/|\?|$)/;
 
 self.addEventListener("install", (event) => {
   // cache: "reload" — мимо HTTP-кеша браузера, иначе новая версия соберётся из старых файлов.

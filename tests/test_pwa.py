@@ -25,9 +25,9 @@ def test_manifest_and_icons(anon):
     m = json.loads(r.text)
     assert m["start_url"] == "/" and m["display"] == "standalone"
     # имя приложения — на языке браузера, по умолчанию английское
-    assert (m["name"], m["lang"]) == ("Our Home", "en")
+    assert (m["name"], m["lang"]) == ("Task Board", "en")
     ru = anon.get("/manifest.webmanifest", headers={"Accept-Language": "ru-RU,ru;q=0.9"}).json()
-    assert (ru["name"], ru["lang"]) == ("Наш дом", "ru")
+    assert (ru["name"], ru["lang"]) == ("Доска задач", "ru")
     purposes = set()
     for icon in m["icons"]:
         img = anon.get(icon["src"])

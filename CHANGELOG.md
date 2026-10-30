@@ -9,6 +9,29 @@ and a Helm chart `oci://ghcr.io/gera-corp/charts/to-do-board` of the same versio
 The GitHub release notes are taken from the matching section below, so add an entry
 here before pushing a `vX.Y.Z` tag.
 
+## [0.7.0] - 2026-10-30
+
+### Added
+- Several boards: an administrator creates, renames and deletes them, and everyone
+  switches between them in the header. All people see all boards.
+- Custom columns per board: add, rename, reorder and delete. Each column has a role
+  (Start, In progress, Review, Done) that drives the behaviour: repeats land in Start,
+  Review notifies the author, Done closes the task and awards points.
+- A Settings window for administrators with the app name, boards and columns.
+- Points and the leaderboard can be turned off per board.
+
+### Changed
+- The app is no longer about household chores: new installations are called
+  "Task Board" / "Доска задач". Existing installations keep their name and board.
+- The leaderboard and history use board-specific data; history shows column names as
+  they were at the time of the move.
+- `POST /api/tasks/{id}/move` and `PATCH /api/tasks/{id}` take `column_id`; `status` still
+  works and means the first column with that role.
+
+### Security
+- A column with tasks can't be deleted without choosing where the tasks go, and a board
+  always keeps a Start and a Done column.
+
 ## [0.6.0] - 2026-10-23
 
 ### Added
@@ -115,6 +138,7 @@ here before pushing a `vX.Y.Z` tag.
 - Distroless non-root container image for amd64 and arm64, CI with tests, linters,
   SBOM, provenance and Trivy scanning, and a Helm chart with secrets from Vault.
 
+[0.7.0]: https://github.com/gera-corp/to-do-board/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/gera-corp/to-do-board/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/gera-corp/to-do-board/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/gera-corp/to-do-board/compare/v0.3.0...v0.4.0

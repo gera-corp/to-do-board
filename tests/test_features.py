@@ -88,7 +88,7 @@ def test_history_records_changes(admin):
     assert kinds == ["created", "assigned", "edited", "status"]
     assert events[1]["payload"] == {"from": None, "to": petya["id"]}
     assert sorted(events[2]["payload"]["fields"]) == ["priority", "title"]
-    assert events[3]["payload"] == {"from": "todo", "to": "in_progress"}
+    assert events[3]["payload"] == {"from": "todo", "to": "in_progress", "from_title": "To Do", "to_title": "In Progress"}
     assert events[0]["user_id"] == admin.get("/api/me").json()["id"]
 
 
@@ -149,14 +149,14 @@ def test_points_validation(admin):
 # ---------- Telegram ----------
 
 def test_config_reports_telegram(admin):
-    assert admin.get("/api/config").json() == {"telegram": True, "bot_username": "home_test_bot"}
+    assert admin.get("/api/config").json() == {"telegram": True, "bot_username": "home_test_bot", "site_title": ""}
 
 
 def test_config_without_telegram(tmp_path, monkeypatch):
     monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
     client = TestClient(create_app(str(tmp_path / "x.db")))
     client.post("/api/setup", json={"username": "a", "display_name": "A", "password": "secret"})
-    assert client.get("/api/config").json() == {"telegram": False, "bot_username": None}
+    assert client.get("/api/config").json() == {"telegram": False, "bot_username": None, "site_title": ""}
     assert client.post("/api/me/telegram").status_code == 400
 
 
