@@ -9,6 +9,12 @@ and a Helm chart `oci://ghcr.io/gera-corp/charts/to-do-board` of the same versio
 The GitHub release notes are taken from the matching section below, so add an entry
 here before pushing a `vX.Y.Z` tag.
 
+## [0.7.1] - 2026-10-30
+
+### Changed
+- Updated FastAPI to 0.156.0 and the distroless base image. No changes in behaviour or
+  in the database.
+
 ## [0.7.0] - 2026-10-30
 
 ### Added
@@ -138,6 +144,7 @@ here before pushing a `vX.Y.Z` tag.
 - Distroless non-root container image for amd64 and arm64, CI with tests, linters,
   SBOM, provenance and Trivy scanning, and a Helm chart with secrets from Vault.
 
+[0.7.1]: https://github.com/gera-corp/to-do-board/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/gera-corp/to-do-board/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/gera-corp/to-do-board/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/gera-corp/to-do-board/compare/v0.4.0...v0.5.0
