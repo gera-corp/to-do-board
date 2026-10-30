@@ -1,4 +1,4 @@
 # Зависимости приложения. После правки пересоберите lock-файл:
 #   uv pip compile requirements.in --universal --python-version 3.13 --generate-hashes -o requirements.txt
-fastapi>=0.121
+fastapi>=0.156.0
 uvicorn>=0.30
