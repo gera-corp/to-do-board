@@ -787,7 +787,8 @@ def create_app(db_path: Optional[str] = None, notifier=None) -> FastAPI:
     @app.get("/api/config")
     def config(ctx: Ctx = Depends(get_ctx)):
         return {"telegram": notifier.enabled, "bot_username": notifier.bot_username,
-                "site_title": get_setting(ctx.conn, "site_title")}
+                "site_title": get_setting(ctx.conn, "site_title"),
+                "version": os.environ.get("APP_VERSION") or "dev"}
 
     # --- Telegram ---
 

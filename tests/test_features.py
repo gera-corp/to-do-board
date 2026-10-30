@@ -149,14 +149,14 @@ def test_points_validation(admin):
 # ---------- Telegram ----------
 
 def test_config_reports_telegram(admin):
-    assert admin.get("/api/config").json() == {"telegram": True, "bot_username": "home_test_bot", "site_title": ""}
+    assert admin.get("/api/config").json() == {"telegram": True, "bot_username": "home_test_bot", "site_title": "", "version": "dev"}
 
 
 def test_config_without_telegram(tmp_path, monkeypatch):
     monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
     client = TestClient(create_app(str(tmp_path / "x.db")))
     client.post("/api/setup", json={"username": "a", "display_name": "A", "password": "secret"})
-    assert client.get("/api/config").json() == {"telegram": False, "bot_username": None, "site_title": ""}
+    assert client.get("/api/config").json() == {"telegram": False, "bot_username": None, "site_title": "", "version": "dev"}
     assert client.post("/api/me/telegram").status_code == 400
 
 

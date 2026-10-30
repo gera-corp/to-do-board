@@ -9,6 +9,12 @@ and a Helm chart `oci://ghcr.io/gera-corp/charts/to-do-board` of the same versio
 The GitHub release notes are taken from the matching section below, so add an entry
 here before pushing a `vX.Y.Z` tag.
 
+## [0.7.2] - 2026-10-30
+
+### Added
+- The installed version is shown at the bottom of the board and links to the repository.
+  It is visible only after signing in.
+
 ## [0.7.1] - 2026-10-30
 
 ### Changed
@@ -144,6 +150,7 @@ here before pushing a `vX.Y.Z` tag.
 - Distroless non-root container image for amd64 and arm64, CI with tests, linters,
   SBOM, provenance and Trivy scanning, and a Helm chart with secrets from Vault.
 
+[0.7.2]: https://github.com/gera-corp/to-do-board/compare/v0.7.1...v0.7.2
 [0.7.1]: https://github.com/gera-corp/to-do-board/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/gera-corp/to-do-board/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/gera-corp/to-do-board/compare/v0.5.0...v0.6.0

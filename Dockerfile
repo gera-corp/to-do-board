@@ -42,6 +42,7 @@ COPY --from=deps --chown=65532:65532 --chmod=0700 /data /data
 ENV PYTHONPATH=/opt/app \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
+    APP_VERSION=${VERSION} \
     TODO_DB=/data/tasks.db \
     HOST=0.0.0.0 \
     PORT=8000

@@ -232,6 +232,13 @@ async function loadAll() {
   renderAll();
 }
 
+function renderVersion() {
+  const { version } = state.config;
+  const link = $("#app-version");
+  link.textContent = /^\d/.test(version) ? `v${version}` : version;
+  link.hidden = !version;
+}
+
 function applySiteTitle(title) {
   const name = title || t("Доска задач");
   document.querySelectorAll(".wordmark").forEach((el) => { el.textContent = name; });
@@ -285,6 +292,7 @@ async function start() {
   $("#app").hidden = false;
   state.config = await api("GET", "/api/config");
   applySiteTitle(state.config.site_title);
+  renderVersion();
   await loadAll();
 }
 

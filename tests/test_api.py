@@ -181,3 +181,14 @@ def test_secure_cookie_and_journal_mode(tmp_path, monkeypatch):
     conn = db.connect(path)
     assert conn.execute("PRAGMA journal_mode").fetchone()[0] == "delete"
     conn.close()
+
+
+def test_config_reports_installed_version(admin, monkeypatch):
+    assert admin.get("/api/config").json()["version"] == "dev"
+    monkeypatch.setenv("APP_VERSION", "1.2.3")
+    assert admin.get("/api/config").json()["version"] == "1.2.3"
+
+
+def test_version_is_not_shown_to_strangers(anon):
+    assert anon.get("/api/config").status_code == 401
+    assert "version" not in anon.get("/api/setup").json()
