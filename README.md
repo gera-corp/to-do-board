@@ -58,7 +58,10 @@ cp .env.example .env
 | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | — | Google OAuth client; without them sign-in with Google is off |
 | `TODO_PASSWORD_LOGIN` | `true` | password sign-in |
 | `FORWARDED_ALLOW_IPS` | `127.0.0.1` | proxies whose `X-Forwarded-For` header is trusted |
+| `TODO_ALLOWED_NETWORKS` | — | addresses and subnets allowed to open the board, separated by commas; empty means everyone. Everyone else gets 403 |
 | `LDAP_URL` and other `LDAP_*` | — | sign-in through LDAP or Active Directory, see below |
+
+`TODO_ALLOWED_NETWORKS` is for a gateway that can't filter addresses itself. Behind a proxy, name it exactly in `FORWARDED_ALLOW_IPS`: the board refuses to start with `*`, and the proxy's own address is never allowed, so the board closes if the proxy stops passing the client address. A mistake in the list stops the start too. `/api/health` always answers.
 
 ## Features
 

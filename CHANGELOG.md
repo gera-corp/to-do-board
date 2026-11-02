@@ -9,6 +9,13 @@ and a Helm chart `oci://ghcr.io/gera-corp/charts/to-do-board` of the same versio
 The GitHub release notes are taken from the matching section below, so add an entry
 here before pushing a `vX.Y.Z` tag.
 
+## [0.8.2] - 2026-11-02
+
+### Added
+- `TODO_ALLOWED_NETWORKS` limits the board to a list of addresses and subnets for gateways
+  that can't filter addresses themselves. Everyone else gets 403 instead of the page or
+  the sign-in form. It is off by default.
+
 ## [0.8.1] - 2026-11-02
 
 ### Added
@@ -166,6 +173,7 @@ here before pushing a `vX.Y.Z` tag.
 - Distroless non-root container image for amd64 and arm64, CI with tests, linters,
   SBOM, provenance and Trivy scanning, and a Helm chart with secrets from Vault.
 
+[0.8.2]: https://github.com/gera-corp/to-do-board/compare/v0.8.1...v0.8.2
 [0.8.1]: https://github.com/gera-corp/to-do-board/compare/v0.8.0...v0.8.1
 [0.8.0]: https://github.com/gera-corp/to-do-board/compare/v0.7.2...v0.8.0
 [0.7.2]: https://github.com/gera-corp/to-do-board/compare/v0.7.1...v0.7.2

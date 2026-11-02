@@ -1,5 +1,6 @@
 import hashlib
 import hmac
+import ipaddress
 import secrets
 import threading
 import time
@@ -24,6 +25,23 @@ def verify_password(password: str, stored: str) -> bool:
 
 def new_token() -> str:
     return secrets.token_urlsafe(32)
+
+
+def parse_networks(value: str | None) -> list:
+    """Адреса и подсети через запятую. Ошибка в списке останавливает запуск: доска,
+    молча открывшаяся для всех, хуже доски, которая не запустилась."""
+    return [ipaddress.ip_network(item.strip(), strict=False) for item in (value or "").split(",") if item.strip()]
+
+
+def network_allowed(host: str | None, allowed: list, proxies: list) -> bool:
+    """Сам прокси посетителем не считается: перестань он передавать адрес клиента,
+    все запросы окажутся «от прокси», и доска закроется, а не откроется."""
+    try:
+        address = ipaddress.ip_address(host or "")
+    except ValueError:
+        return False
+    address = getattr(address, "ipv4_mapped", None) or address
+    return any(address in net for net in allowed) and not any(address in net for net in proxies)
 
 
 # Для несуществующего логина пароль сверяется с этим хешем: ответ занимает столько же

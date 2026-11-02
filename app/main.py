@@ -23,7 +23,15 @@ from .config import load_env_file
 from .ldap_auth import LdapUnavailable, LdapUser, make_directory
 from .i18n import normalize_lang, points_word, tr
 from .recurrence import next_due
-from .security import DECOY_PASSWORD_HASH, LoginLimiter, hash_password, new_token, verify_password
+from .security import (
+    DECOY_PASSWORD_HASH,
+    LoginLimiter,
+    hash_password,
+    network_allowed,
+    new_token,
+    parse_networks,
+    verify_password,
+)
 from .telegram import NullNotifier, TelegramBot, short_date
 
 log = logging.getLogger("todo")
@@ -610,6 +618,23 @@ def create_app(db_path: Optional[str] = None, notifier=None, directory=None) -> 
         notifier.stop()
 
     app = FastAPI(title="Task Board", lifespan=lifespan)
+
+    # Шлюз не всегда умеет фильтровать адреса, поэтому доступ можно ограничить здесь.
+    allowed_networks = parse_networks(os.environ.get("TODO_ALLOWED_NETWORKS"))
+    if allowed_networks:
+        trusted_proxies = os.environ.get("FORWARDED_ALLOW_IPS") or "127.0.0.1"
+        # При доверии любому прокси посетитель сам назвал бы себе разрешённый адрес.
+        if "*" in trusted_proxies:
+            raise ValueError("TODO_ALLOWED_NETWORKS needs FORWARDED_ALLOW_IPS without *")
+        proxies = parse_networks(trusted_proxies)
+
+        @app.middleware("http")
+        async def restrict_networks(request: Request, call_next):
+            host = request.client.host if request.client else None
+            # Проверке здоровья контейнера ответ нужен всегда, а данных в нём нет.
+            if request.url.path == "/api/health" or network_allowed(host, allowed_networks, proxies):
+                return await call_next(request)
+            return PlainTextResponse("Forbidden", status_code=403)
 
     # Ошибки API — на языке интерфейса, который клиент передаёт в Accept-Language.
     @app.exception_handler(StarletteHTTPException)
