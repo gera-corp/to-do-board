@@ -1,12 +1,15 @@
-# Запуск из исходников: docker compose up -d --build
+# Готовый образ из GHCR:   docker compose up -d
+# Конкретная версия:       TAG=0.7.2 docker compose up -d
+# Локальный код:           docker compose up -d --build
+# Обновить готовый образ:  docker compose pull && docker compose up -d
 # Настройки берутся из .env (необязательно, шаблон — .env.example).
 services:
   app:
+    image: ghcr.io/gera-corp/to-do-board:${TAG:-latest}
     build:
       context: .
       args:
         VERSION: ${VERSION:-dev}
-    image: to-do-board:local
     restart: unless-stopped
     ports:
       - "${HOST:-0.0.0.0}:${PORT:-8000}:8000"

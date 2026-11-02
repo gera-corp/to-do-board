@@ -17,14 +17,23 @@ The server listens on all interfaces, so a phone on the same Wi‑Fi can open th
 ### With Docker Compose
 
 ```bash
-docker compose up -d --build
+docker compose up -d
 ```
 
-This builds the image from the source and runs it with the same restrictions as in the cluster: a read-only filesystem, no Linux capabilities, no root. Open http://localhost:8000. `.env` is optional and is picked up automatically; `PORT` and `HOST` set the published port and address.
+This downloads the published image and runs it with the same restrictions as in the cluster: a read-only filesystem, no Linux capabilities, no root. Open http://localhost:8000. `.env` is optional and is picked up automatically; `PORT` and `HOST` set the published port and address.
+
+| Command | What it runs |
+|---|---|
+| `docker compose up -d` | the published image, `latest` by default |
+| `TAG=0.7.2 docker compose up -d` | a specific published version |
+| `docker compose up -d --build` | your local code, built from the source |
+| `docker compose pull && docker compose up -d` | the newest published image |
+
+An image that is already on the machine doesn't update by itself. A local build also replaces the image under the same name, so `docker compose pull` is the way back to the published one.
 
 The database lives in the `data` Docker volume, separate from the `data/` folder that `./run.sh` uses. It survives `docker compose down` and rebuilds; `docker compose down -v` deletes it.
 
-After changing the code, run `docker compose up -d --build` again. Logs: `docker compose logs -f`.
+Logs: `docker compose logs -f`.
 
 A Telegram bot token can only serve one running copy. If `.env` holds the token of a bot that already runs elsewhere, the two copies will steal each other's messages, so use a separate test bot or leave the token empty.
 
@@ -135,7 +144,7 @@ app/
 tests/           pytest tests
 charts/          Helm chart
 Dockerfile       container image (distroless, non-root)
-compose.yaml     run from the source with Docker Compose
+compose.yaml     run with Docker Compose
 .github/         CI: tests, linters, image build and scanning, releases
 ```
 

@@ -12,8 +12,8 @@ here before pushing a `vX.Y.Z` tag.
 ## [Unreleased]
 
 ### Added
-- `compose.yaml` to run the project from the source with Docker Compose, with the same
-  restrictions as in the cluster.
+- `compose.yaml` to run the published image, or your local code with `--build`, with the
+  same restrictions as in the cluster.
 
 ## [0.7.2] - 2026-10-30
 
