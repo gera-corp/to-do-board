@@ -34,6 +34,7 @@ class LdapConfig:
     name_attr: str = "displayName"
     ca_file: Optional[str] = None
     link_existing: bool = False
+    tls_insecure: bool = False
 
     def __post_init__(self):
         if "{username}" not in self.user_filter:
@@ -64,11 +65,14 @@ class LdapDirectory:
         self.server = None if connection_factory else self._make_server()
 
     def _make_server(self) -> Server:
-        # Отключать проверку сертификата нельзя: иначе пароли уйдут любому, кто подменит сервер.
+        # Без проверки пароли уйдут любому, кто подменит сервер, поэтому только по явной настройке.
+        insecure = self.config.tls_insecure
+        if insecure:
+            log.warning("LDAP_TLS_INSECURE: сертификат сервера не проверяется, пароли можно перехватить")
         # Явная версия — обход строгого режима Python 3.13 (VERIFY_X509_STRICT): он отвергает
         # внутренние CA за формат расширений, хотя цепочка и подпись верны.
-        tls = Tls(validate=ssl.CERT_REQUIRED, version=ssl.PROTOCOL_TLS_CLIENT,
-                  ca_certs_file=self.config.ca_file or None)
+        tls = Tls(validate=ssl.CERT_NONE if insecure else ssl.CERT_REQUIRED,
+                  version=ssl.PROTOCOL_TLS_CLIENT, ca_certs_file=self.config.ca_file or None)
         return Server(self.config.url, get_info=NONE, connect_timeout=TIMEOUT_SECONDS, tls=tls)
 
     def _make_connection(self, user: str, password: str) -> Connection:
@@ -128,4 +132,5 @@ def make_directory() -> Optional[LdapDirectory]:
         name_attr=env("LDAP_NAME_ATTR") or "displayName",
         ca_file=env("LDAP_CA_FILE") or None,
         link_existing=(env("LDAP_LINK_EXISTING") or "").lower() in ("1", "true", "yes"),
+        tls_insecure=(env("LDAP_TLS_INSECURE") or "").lower() in ("1", "true", "yes"),
     ))

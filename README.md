@@ -118,7 +118,9 @@ The usual sign-in form works with a directory, too: the board finds the person w
 - **Removing someone:** a person disabled in the directory can't sign in again, but a session that is already open lasts up to 90 days. Delete them under People to end it right away.
 - **Account lockout:** failed attempts on the board also count in the directory, so an AD lockout policy can apply.
 
-Always use `ldaps://` outside a trusted network. The certificate is always verified, including the server name, so connect by the name in the certificate rather than by IP. For an internal CA, put its root certificate into `./certs` and set `LDAP_CA_FILE`; in the chart, use a Secret with the `ca.pem` key and `config.ldap.caSecret`.
+Always use `ldaps://` outside a trusted network. The certificate is verified by default, including the server name, so connect by the name in the certificate rather than by IP. For an internal CA or a self-signed certificate, put the root or the self-signed certificate into `./certs` and set `LDAP_CA_FILE`; in the chart, use a Secret with the `ca.pem` key and `config.ldap.caSecret`.
+
+`LDAP_TLS_INSECURE=true` (`config.ldap.tlsInsecure`) turns the verification off. The traffic stays encrypted, but anyone who can impersonate the server gets the passwords, so prefer `LDAP_CA_FILE`, which works with self-signed certificates too.
 
 LLDAP:
 

@@ -100,6 +100,9 @@
             },
             "linkExisting": {
               "type": "boolean"
+            },
+            "tlsInsecure": {
+              "type": "boolean"
             }
           }
         }

@@ -82,6 +82,8 @@ spec:
               value: {{ .nameAttr | quote }}
             - name: LDAP_LINK_EXISTING
               value: {{ .linkExisting | quote }}
+            - name: LDAP_TLS_INSECURE
+              value: {{ .tlsInsecure | quote }}
             {{- if .caSecret }}
             - name: LDAP_CA_FILE
               value: /certs/ca.pem

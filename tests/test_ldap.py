@@ -1,3 +1,5 @@
+import ssl
+
 import pytest
 from fastapi.testclient import TestClient
 from ldap3 import Connection, MOCK_SYNC, OFFLINE_SLAPD_2_4, Server
@@ -68,6 +70,20 @@ def test_wrong_service_password_means_directory_is_down():
 def test_filter_must_contain_username():
     with pytest.raises(ValueError):
         LdapConfig(url="ldap://x", base_dn=BASE, bind_dn="", bind_password="", user_filter="(uid=alice)")
+
+
+def real_directory(**overrides):
+    return LdapDirectory(LdapConfig(url="ldaps://dc.example.org", base_dn=BASE, bind_dn="x", bind_password="x", **overrides))
+
+
+def test_certificate_is_verified_by_default():
+    assert real_directory().server.tls.validate == ssl.CERT_REQUIRED
+
+
+def test_verification_is_off_only_on_request(caplog):
+    with caplog.at_level("WARNING", logger="ldap"):
+        assert real_directory(tls_insecure=True).server.tls.validate == ssl.CERT_NONE
+    assert "LDAP_TLS_INSECURE" in caplog.text
 
 
 class FakeDirectory:
