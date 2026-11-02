@@ -9,6 +9,12 @@ and a Helm chart `oci://ghcr.io/gera-corp/charts/to-do-board` of the same versio
 The GitHub release notes are taken from the matching section below, so add an entry
 here before pushing a `vX.Y.Z` tag.
 
+## [Unreleased]
+
+### Added
+- `compose.yaml` to run the project from the source with Docker Compose, with the same
+  restrictions as in the cluster.
+
 ## [0.7.2] - 2026-10-30
 
 ### Added

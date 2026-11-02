@@ -48,6 +48,8 @@ jobs:
         with:
           dockerfile: Dockerfile
       - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+      - name: docker compose config
+        run: docker compose config --quiet
       - name: helm lint
         run: helm lint charts/to-do-board --strict --set ingress.host=ci.example.com
       # На релизном теге проверяем заранее, что в CHANGELOG есть запись: иначе образ

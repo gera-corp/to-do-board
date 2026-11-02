@@ -1,0 +1,33 @@
+# Запуск из исходников: docker compose up -d --build
+# Настройки берутся из .env (необязательно, шаблон — .env.example).
+services:
+  app:
+    build:
+      context: .
+      args:
+        VERSION: ${VERSION:-dev}
+    image: to-do-board:local
+    restart: unless-stopped
+    ports:
+      - "${HOST:-0.0.0.0}:${PORT:-8000}:8000"
+    env_file:
+      - path: .env
+        required: false
+    # Важнее .env: эти значения описывают устройство контейнера, а не запуск на хосте.
+    environment:
+      HOST: 0.0.0.0
+      PORT: "8000"
+      TODO_DB: /data/tasks.db
+    volumes:
+      - data:/data
+    # Те же ограничения, что в кластере.
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  data:

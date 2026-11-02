@@ -14,6 +14,20 @@ Open http://localhost:8000. On the first visit the app asks you to create the fi
 
 The server listens on all interfaces, so a phone on the same Wi‑Fi can open the board at `http://<computer-IP>:8000`.
 
+### With Docker Compose
+
+```bash
+docker compose up -d --build
+```
+
+This builds the image from the source and runs it with the same restrictions as in the cluster: a read-only filesystem, no Linux capabilities, no root. Open http://localhost:8000. `.env` is optional and is picked up automatically; `PORT` and `HOST` set the published port and address.
+
+The database lives in the `data` Docker volume, separate from the `data/` folder that `./run.sh` uses. It survives `docker compose down` and rebuilds; `docker compose down -v` deletes it.
+
+After changing the code, run `docker compose up -d --build` again. Logs: `docker compose logs -f`.
+
+A Telegram bot token can only serve one running copy. If `.env` holds the token of a bot that already runs elsewhere, the two copies will steal each other's messages, so use a separate test bot or leave the token empty.
+
 ### Settings
 
 Settings live in a `.env` file in the project root. Start from the template:
@@ -121,6 +135,7 @@ app/
 tests/           pytest tests
 charts/          Helm chart
 Dockerfile       container image (distroless, non-root)
+compose.yaml     run from the source with Docker Compose
 .github/         CI: tests, linters, image build and scanning, releases
 ```
 
