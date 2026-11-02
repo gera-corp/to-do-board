@@ -71,6 +71,37 @@
         "trustedProxies": {
           "type": "string",
           "minLength": 1
+        },
+        "ldap": {
+          "type": "object",
+          "properties": {
+            "url": {
+              "type": "string",
+              "pattern": "^(ldaps?://.+)?$"
+            },
+            "baseDn": {
+              "type": "string"
+            },
+            "bindDn": {
+              "type": "string"
+            },
+            "userFilter": {
+              "type": "string",
+              "pattern": "^(.*\\{username\\}.*)?$"
+            },
+            "loginAttr": {
+              "type": "string"
+            },
+            "nameAttr": {
+              "type": "string"
+            },
+            "caSecret": {
+              "type": "string"
+            },
+            "linkExisting": {
+              "type": "boolean"
+            }
+          }
         }
       }
     },

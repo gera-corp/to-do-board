@@ -1,6 +1,7 @@
 import hashlib
 import hmac
 import json
+import logging
 import re
 import os
 import sqlite3
@@ -19,12 +20,16 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from . import db, google
 from .config import load_env_file
+from .ldap_auth import LdapUnavailable, LdapUser, make_directory
 from .i18n import normalize_lang, points_word, tr
 from .recurrence import next_due
 from .security import DECOY_PASSWORD_HASH, LoginLimiter, hash_password, new_token, verify_password
 from .telegram import NullNotifier, TelegramBot, short_date
 
+log = logging.getLogger("todo")
+
 STATIC_DIR = Path(__file__).parent / "static"
+USER_COLORS = ("#2F5BD3", "#E0533D", "#2E9E6A", "#D99A12", "#8A4FD8", "#1F9BB0", "#D9488F", "#4A5A6A")
 SESSION_COOKIE = "session"
 SESSION_DAYS = 90
 OAUTH_COOKIE = "oauth_state"
@@ -200,6 +205,7 @@ def user_out(row: sqlite3.Row) -> dict:
         "theme": row["theme"],
         "lang": row["lang"],
         "google_email": row["google_email"],
+        "auth_source": row["auth_source"],
     }
 
 
@@ -552,10 +558,34 @@ def make_notifier():
 
 # ---------- приложение ----------
 
-def create_app(db_path: Optional[str] = None, notifier=None) -> FastAPI:
+def ldap_local_user(conn: sqlite3.Connection, info: LdapUser, link_existing: bool) -> Optional[sqlite3.Row]:
+    """Находит или заводит человека из каталога. None — логин занят локальным пользователем."""
+    row = conn.execute("SELECT * FROM users WHERE username = ?", (info.login,)).fetchone()
+    if row is None:
+        count = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+        cur = conn.execute(
+            """INSERT INTO users (username, display_name, password_hash, color, auth_source)
+               VALUES (?, ?, ?, ?, 'ldap')""",
+            # Случайный хеш: локальным паролем в эту учётную запись войти нельзя.
+            (info.login, info.display_name[:64], hash_password(new_token()), USER_COLORS[count % len(USER_COLORS)]),
+        )
+        return conn.execute("SELECT * FROM users WHERE id = ?", (cur.lastrowid,)).fetchone()
+    # Совпадение логинов не даёт права войти в локальную учётную запись, иначе человек
+    # из каталога с логином admin стал бы администратором доски. Привязка — только явная.
+    if row["auth_source"] != "ldap" and not link_existing:
+        return None
+    conn.execute(
+        "UPDATE users SET display_name = ?, auth_source = 'ldap', password_hash = ? WHERE id = ?",
+        (info.display_name[:64], hash_password(new_token()), row["id"]),
+    )
+    return conn.execute("SELECT * FROM users WHERE id = ?", (row["id"],)).fetchone()
+
+
+def create_app(db_path: Optional[str] = None, notifier=None, directory=None) -> FastAPI:
     load_env_file()
     db_path = db_path or os.environ.get("TODO_DB") or str(Path("data") / "tasks.db")
     notifier = notifier or make_notifier()
+    directory = directory or make_directory()
     # За HTTPS-ingress cookie сессии должна уходить только по защищённому соединению.
     cookie_secure = os.environ.get("TODO_COOKIE_SECURE", "").lower() in ("1", "true", "yes")
     db.init_db(db_path, journal_mode=os.environ.get("TODO_SQLITE_JOURNAL_MODE") or "WAL")
@@ -675,6 +705,7 @@ def create_app(db_path: Optional[str] = None, notifier=None) -> FastAPI:
     def setup_status(conn: sqlite3.Connection = Conn):
         count = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
         return {"needs_setup": count == 0, "google": google_enabled, "password_login": password_login,
+                "ldap": directory is not None,
                 "site_title": get_setting(conn, "site_title")}
 
     @app.post("/api/setup", status_code=201)
@@ -687,18 +718,37 @@ def create_app(db_path: Optional[str] = None, notifier=None) -> FastAPI:
 
     @app.post("/api/login")
     def login(data: LoginIn, request: Request, response: Response, conn: sqlite3.Connection = Conn):
-        if not password_login:
+        if not password_login and directory is None:
             raise HTTPException(403, "Вход по паролю отключён. Войдите через Google.")
         username = data.username.strip()
         account_key = f"user:{username.lower()}"
         ip_key = f"ip:{request.client.host if request.client else '-'}"
         if account_limiter.blocked(account_key) or ip_limiter.blocked(ip_key):
             raise HTTPException(429, "Слишком много неудачных попыток. Попробуйте через 15 минут.")
+
         user = conn.execute("SELECT * FROM users WHERE username = ?", (username,)).fetchone()
         # Пароль проверяется и для несуществующего логина, чтобы время ответа не выдавало,
         # какие логины есть.
         correct = verify_password(data.password, user["password_hash"] if user else DECOY_PASSWORD_HASH)
-        if user is None or not correct:
+        # Учётная запись из каталога входит только через каталог: иначе отключённый там
+        # человек остался бы на доске.
+        local_ok = password_login and correct and user is not None and user["auth_source"] == "local"
+
+        # Локальный вход проверяется первым: администратор не ждёт недоступный каталог,
+        # и его пароль не уходит в каталог. На пустой доске сначала нужна настройка.
+        ldap_down = False
+        if not local_ok and directory is not None and conn.execute("SELECT 1 FROM users LIMIT 1").fetchone():
+            try:
+                info = directory.authenticate(username, data.password)
+            except LdapUnavailable as exc:
+                log.warning("LDAP недоступен: %s", exc)
+                ldap_down, info = True, None
+            user = (ldap_local_user(conn, info, directory.config.link_existing) if info else None) or user
+            local_ok = info is not None and user["auth_source"] == "ldap"
+
+        if not local_ok:
+            if ldap_down and (user is None or user["auth_source"] == "ldap"):
+                raise HTTPException(503, "Каталог пользователей недоступен. Попробуйте позже.")
             account_limiter.fail(account_key)
             ip_limiter.fail(ip_key)
             raise HTTPException(401, "Неверный логин или пароль")
@@ -835,6 +885,8 @@ def create_app(db_path: Optional[str] = None, notifier=None) -> FastAPI:
                 raise HTTPException(400, "Нельзя снять права администратора с себя")
             changes["is_admin"] = int(changes["is_admin"])
         if "password" in changes:
+            if target["auth_source"] == "ldap":
+                raise HTTPException(400, "Пароль этого человека хранится в каталоге пользователей")
             changes["password_hash"] = hash_password(changes.pop("password"))
         if "google_email" in changes:
             # Почту назначает только администратор: иначе можно привязать к себе чужой адрес.

@@ -61,6 +61,9 @@ EN = {
         "Tasks can only move to a column that is equally finished",
     "Связывать можно только задачи одной доски": "Only tasks on the same board can be linked",
 
+    "Каталог пользователей недоступен. Попробуйте позже.": "The user directory is unavailable. Try again later.",
+    "Пароль этого человека хранится в каталоге пользователей": "This person's password is kept in the user directory",
+
     # --- уведомления ---
     "📌 {actor} поручает вам: {task}": "📌 {actor} assigned you: {task}",
     "Срок: {date}": "Due: {date}",

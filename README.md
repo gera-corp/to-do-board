@@ -58,6 +58,7 @@ cp .env.example .env
 | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | — | Google OAuth client; without them sign-in with Google is off |
 | `TODO_PASSWORD_LOGIN` | `true` | password sign-in |
 | `FORWARDED_ALLOW_IPS` | `127.0.0.1` | proxies whose `X-Forwarded-For` header is trusted |
+| `LDAP_URL` and other `LDAP_*` | — | sign-in through LDAP or Active Directory, see below |
 
 ## Features
 
@@ -107,6 +108,48 @@ To run locally, set `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` and `TODO_PUBLIC_
 
 Password sign-in is protected against guessing: after 10 failed attempts on one username or 30 from one address it is locked for 15 minutes. A non-existent username takes as long to answer as a real one, so usernames can't be discovered by timing.
 
+## Sign in with LDAP or Active Directory
+
+The usual sign-in form works with a directory, too: the board finds the person with a read-only service account, then checks their password against the directory. The password is never stored on the board. Set `LDAP_URL` to turn this on.
+
+- **Who can sign in:** whoever matches `LDAP_USER_FILTER`, so put the group into the filter. On first sign-in the person is created on the board as a regular user.
+- **Administrators** are assigned on the board. Create the first one with a local password: this account keeps working when the directory is down.
+- **Existing people** with the same username aren't linked automatically, so that a directory user named `admin` can't become your local administrator. Set `LDAP_LINK_EXISTING=true` if the usernames are known to match. After linking, the local password stops working.
+- **Removing someone:** a person disabled in the directory can't sign in again, but a session that is already open lasts up to 90 days. Delete them under People to end it right away.
+- **Account lockout:** failed attempts on the board also count in the directory, so an AD lockout policy can apply.
+
+Always use `ldaps://` outside a trusted network. The certificate is always verified, including the server name, so connect by the name in the certificate rather than by IP. For an internal CA, put its root certificate into `./certs` and set `LDAP_CA_FILE`; in the chart, use a Secret with the `ca.pem` key and `config.ldap.caSecret`.
+
+LLDAP:
+
+```
+LDAP_URL=ldaps://lldap.example.org:6360
+LDAP_BASE_DN=dc=example,dc=org
+LDAP_BIND_DN=uid=reader,ou=people,dc=example,dc=org
+LDAP_BIND_PASSWORD=...
+LDAP_USER_FILTER=(&(uid={username})(memberOf=cn=board_users,ou=groups,dc=example,dc=org))
+LDAP_CA_FILE=/certs/ca.pem
+```
+
+Active Directory, with active members of a group, including nested groups:
+
+```
+LDAP_URL=ldaps://dc01.example.local:636
+LDAP_BASE_DN=DC=example,DC=local
+LDAP_BIND_DN=CN=svc-board,OU=Service Accounts,DC=example,DC=local
+LDAP_BIND_PASSWORD=...
+LDAP_USER_FILTER=(&(objectClass=user)(sAMAccountName={username})(!(userAccountControl:1.2.840.113556.1.4.803:=2))(memberOf:1.2.840.113556.1.4.1941:=CN=board_users,OU=Groups,DC=example,DC=local))
+LDAP_LOGIN_ATTR=sAMAccountName
+LDAP_CA_FILE=/certs/ca.pem
+```
+
+Export the root certificate of an AD CA on the domain controller and convert it to PEM:
+
+```
+certutil -ca.cert ca.cer
+certutil -encode ca.cer ca.pem
+```
+
 ## Telegram notifications
 
 1. Create a bot with [@BotFather](https://t.me/BotFather) using `/newbot` and copy the token.
@@ -135,6 +178,7 @@ app/
   db.py          SQLite schema and migrations
   security.py    password hashing (PBKDF2), session tokens, sign-in rate limiting
   google.py      sign-in with Google (OpenID Connect)
+  ldap_auth.py   sign-in through LDAP or Active Directory
   telegram.py    the bot, notification queue, morning digest
   i18n.py        English translations of server messages
   recurrence.py  next due date for recurring tasks
@@ -254,6 +298,7 @@ Main chart values:
 | `config.sqliteJournalMode` | `DELETE` | SQLite journal mode; `WAL` only on local disks, not NFS |
 | `config.googleClientId` | empty | Google OAuth client ID; empty turns sign-in with Google off |
 | `config.passwordLogin` | `true` | password sign-in |
+| `config.ldap` | off | sign-in through LDAP or Active Directory; put `LDAP_BIND_PASSWORD` into `vault.env` |
 | `config.trustedProxies` | `*` | proxies trusted for the client address (safe while the NetworkPolicy admits only the ingress controller) |
 | `vault.secretPath` | `secret/data/to-do-board` | secret in Vault (KV v2) |
 | `vault.env` | `TELEGRAM_BOT_TOKEN` | which secret keys become environment variables (add `GOOGLE_CLIENT_SECRET` for Google) |

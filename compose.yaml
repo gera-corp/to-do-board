@@ -23,6 +23,8 @@ services:
       TODO_DB: /data/tasks.db
     volumes:
       - data:/data
+      # Корневой сертификат для LDAPS: положите его в ./certs и укажите LDAP_CA_FILE.
+      - ${LDAP_CERTS_DIR:-./certs}:/certs:ro
     # Те же ограничения, что в кластере.
     read_only: true
     tmpfs:

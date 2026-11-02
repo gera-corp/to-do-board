@@ -66,6 +66,28 @@ spec:
             - name: GOOGLE_CLIENT_ID
               value: {{ . | quote }}
             {{- end }}
+            {{- with .Values.config.ldap }}
+            {{- if .url }}
+            - name: LDAP_URL
+              value: {{ .url | quote }}
+            - name: LDAP_BASE_DN
+              value: {{ .baseDn | quote }}
+            - name: LDAP_BIND_DN
+              value: {{ .bindDn | quote }}
+            - name: LDAP_USER_FILTER
+              value: {{ .userFilter | quote }}
+            - name: LDAP_LOGIN_ATTR
+              value: {{ .loginAttr | quote }}
+            - name: LDAP_NAME_ATTR
+              value: {{ .nameAttr | quote }}
+            - name: LDAP_LINK_EXISTING
+              value: {{ .linkExisting | quote }}
+            {{- if .caSecret }}
+            - name: LDAP_CA_FILE
+              value: /certs/ca.pem
+            {{- end }}
+            {{- end }}
+            {{- end }}
             {{- with include "to-do-board.publicUrl" . }}
             - name: TODO_PUBLIC_URL
               value: {{ . | quote }}
@@ -107,6 +129,11 @@ spec:
               mountPath: /data
             - name: tmp
               mountPath: /tmp
+            {{- if and .Values.config.ldap.url .Values.config.ldap.caSecret }}
+            - name: ldap-ca
+              mountPath: /certs
+              readOnly: true
+            {{- end }}
       volumes:
         - name: data
           {{- if .Values.persistence.enabled }}
@@ -119,6 +146,11 @@ spec:
           emptyDir:
             medium: Memory
             sizeLimit: 16Mi
+        {{- if and .Values.config.ldap.url .Values.config.ldap.caSecret }}
+        - name: ldap-ca
+          secret:
+            secretName: {{ .Values.config.ldap.caSecret }}
+        {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

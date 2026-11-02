@@ -34,6 +34,7 @@ const EN = /*EN-BEGIN*/{
   "Моя доска": "My board",
   "Доска": "Board",
   "Настройки": "Settings",
+  "вход через каталог": "signs in through the directory",
   "Открыть репозиторий на GitHub": "Open the repository on GitHub",
   "Название приложения": "App name",
   "Доски": "Boards",

@@ -58,6 +58,7 @@ cp .env.example .env
 | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | — | OAuth-клиент Google; без них вход через Google выключен |
 | `TODO_PASSWORD_LOGIN` | `true` | вход по паролю |
 | `FORWARDED_ALLOW_IPS` | `127.0.0.1` | чьим заголовкам `X-Forwarded-For` верить |
+| `LDAP_URL` и другие `LDAP_*` | — | вход через LDAP или Active Directory, см. ниже |
 
 ## Что умеет
 
@@ -107,6 +108,48 @@ cp .env.example .env
 
 Вход по паролю защищён от перебора. После 10 неудачных попыток на один логин или 30 с одного адреса вход блокируется на 15 минут. Ответ для несуществующего логина приходит так же долго, как для настоящего, поэтому перебором нельзя выяснить, какие логины есть.
 
+## Вход через LDAP и Active Directory
+
+Обычная форма входа работает и с каталогом: доска находит человека служебной учётной записью только для чтения, а затем проверяет его пароль в каталоге. На самой доске пароль не хранится. Вход включается настройкой `LDAP_URL`.
+
+- **Кто может войти:** все, кто подходит под `LDAP_USER_FILTER`, поэтому группу указывайте в фильтре. При первом входе человек заводится на доске обычным пользователем.
+- **Администраторов** назначают на самой доске. Первого создайте с локальным паролем: эта учётная запись работает, даже когда каталог недоступен.
+- **Уже заведённые люди** с таким же логином автоматически не привязываются, чтобы пользователь каталога с логином `admin` не стал вашим локальным администратором. Если логины точно совпадают, задайте `LDAP_LINK_EXISTING=true`. После привязки локальный пароль перестаёт действовать.
+- **Если человека убрали:** отключённый в каталоге пользователь больше не войдёт, но уже открытая сессия живёт до 90 дней. Чтобы завершить её сразу, удалите его в «Людях».
+- **Блокировка учётной записи:** неудачные попытки на доске засчитываются и в каталоге, поэтому может сработать политика блокировки AD.
+
+За пределами доверенной сети всегда используйте `ldaps://`. Сертификат проверяется всегда, включая имя сервера, поэтому подключайтесь по имени из сертификата, а не по IP. Для внутреннего CA положите его корневой сертификат в `./certs` и укажите `LDAP_CA_FILE`, а в чарте используйте Secret с ключом `ca.pem` и `config.ldap.caSecret`.
+
+LLDAP:
+
+```
+LDAP_URL=ldaps://lldap.example.org:6360
+LDAP_BASE_DN=dc=example,dc=org
+LDAP_BIND_DN=uid=reader,ou=people,dc=example,dc=org
+LDAP_BIND_PASSWORD=...
+LDAP_USER_FILTER=(&(uid={username})(memberOf=cn=board_users,ou=groups,dc=example,dc=org))
+LDAP_CA_FILE=/certs/ca.pem
+```
+
+Active Directory, активные участники группы, включая вложенные группы:
+
+```
+LDAP_URL=ldaps://dc01.example.local:636
+LDAP_BASE_DN=DC=example,DC=local
+LDAP_BIND_DN=CN=svc-board,OU=Service Accounts,DC=example,DC=local
+LDAP_BIND_PASSWORD=...
+LDAP_USER_FILTER=(&(objectClass=user)(sAMAccountName={username})(!(userAccountControl:1.2.840.113556.1.4.803:=2))(memberOf:1.2.840.113556.1.4.1941:=CN=board_users,OU=Groups,DC=example,DC=local))
+LDAP_LOGIN_ATTR=sAMAccountName
+LDAP_CA_FILE=/certs/ca.pem
+```
+
+Выгрузить корневой сертификат CA на контроллере домена и перевести его в PEM:
+
+```
+certutil -ca.cert ca.cer
+certutil -encode ca.cer ca.pem
+```
+
 ## Уведомления в Telegram
 
 1. Создайте бота у [@BotFather](https://t.me/BotFather) командой `/newbot` и скопируйте токен.
@@ -135,6 +178,7 @@ app/
   db.py          схема SQLite и миграции
   security.py    хеширование паролей (PBKDF2), токены сессий, лимит попыток входа
   google.py      вход через Google (OpenID Connect)
+  ldap_auth.py   вход через LDAP и Active Directory
   telegram.py    бот, очередь уведомлений, утренняя сводка
   i18n.py        английские переводы серверных сообщений
   recurrence.py  расчёт следующей даты для повторяющихся задач
@@ -254,6 +298,7 @@ git tag -a vX.Y.Z -m "vX.Y.Z" && git push origin vX.Y.Z
 | `config.sqliteJournalMode` | `DELETE` | режим журнала SQLite; `WAL` только для локальных дисков, не NFS |
 | `config.googleClientId` | пусто | client ID OAuth-клиента Google; пусто — вход через Google выключен |
 | `config.passwordLogin` | `true` | вход по паролю |
+| `config.ldap` | выключено | вход через LDAP или Active Directory; `LDAP_BIND_PASSWORD` добавьте в `vault.env` |
 | `config.trustedProxies` | `*` | чьим заголовкам с адресом клиента верить (безопасно, пока NetworkPolicy пускает только ingress-контроллер) |
 | `vault.secretPath` | `secret/data/to-do-board` | секрет в Vault (KV v2) |
 | `vault.env` | `TELEGRAM_BOT_TOKEN` | какие ключи секрета подставить в переменные окружения (для Google добавьте `GOOGLE_CLIENT_SECRET`) |

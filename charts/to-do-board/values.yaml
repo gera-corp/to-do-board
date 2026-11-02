@@ -59,6 +59,20 @@ config:
   # Client ID OAuth-клиента Google (не секрет). Пусто — вход через Google выключен.
   # Client secret передаётся через vault.env как GOOGLE_CLIENT_SECRET.
   googleClientId: ""
+  # Вход через LDAP или Active Directory. Пустой url — выключен.
+  # Пароль служебной учётной записи передаётся через vault.env как LDAP_BIND_PASSWORD.
+  ldap:
+    url: ""
+    baseDn: ""
+    bindDn: ""
+    # Обязательно с {username}. Пусто — (uid={username}).
+    userFilter: ""
+    loginAttr: ""
+    nameAttr: ""
+    # Secret с ключом ca.pem: корневой сертификат для ldaps://.
+    caSecret: ""
+    # Привязать к каталогу уже заведённых людей с таким же логином.
+    linkExisting: false
   # Чьим заголовкам X-Forwarded-For верить при определении адреса посетителя
   # (нужно для лимита попыток входа). "*" безопасно, пока networkPolicy пускает
   # к поду только ingress-контроллер.

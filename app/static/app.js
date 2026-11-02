@@ -165,7 +165,7 @@ async function showAuth() {
   setupMode = options.needs_setup;
   applySiteTitle(options.site_title);
   // Первого администратора создают паролем, даже если потом пароли выключат.
-  const withPassword = setupMode || options.password_login;
+  const withPassword = setupMode || options.password_login || options.ldap;
   const withGoogle = !setupMode && options.google;
   const f = $("#auth-form");
   $("#password-fields").hidden = !withPassword;
@@ -1379,6 +1379,7 @@ function renderPeopleList() {
       const meta = [t("В работе: {n}", { n: s.open }), t("сделано за неделю: {n}", { n: s.done_week })];
       if (state.config.telegram && u.telegram_linked) meta.push(t("Telegram подключён"));
       if (isAdmin && u.google_email) meta.push(`Google: ${u.google_email}`);
+      if (isAdmin && u.auth_source === "ldap") meta.push(t("вход через каталог"));
       return h("li", {},
         magnet(u, "lg"),
         h("div", { class: "who" },
@@ -1411,6 +1412,7 @@ function resetUserForm() {
   userForm.username.required = true;
   userForm.password.required = true;
   userForm.password.placeholder = "";
+  $("#user-password-field").hidden = false;
   $("#user-error").textContent = "";
   renderSwatches();
 }
@@ -1428,6 +1430,8 @@ function editUser(u) {
   userForm.username.required = false;
   userForm.password.required = false;
   userForm.password.value = "";
+  // Пароль человека из каталога меняется в каталоге.
+  $("#user-password-field").hidden = u.auth_source === "ldap";
   userForm.password.placeholder = t("Оставьте пустым, чтобы не менять");
   userForm.display_name.value = u.display_name;
   userForm.is_admin.checked = u.is_admin;

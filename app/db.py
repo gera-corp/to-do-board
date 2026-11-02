@@ -157,6 +157,10 @@ MIGRATIONS = [
     INSERT INTO settings (key, value)
     SELECT 'site_title', 'Наш дом' WHERE EXISTS (SELECT 1 FROM users);
     """,
+    # 8: откуда проверяется пароль человека: local — на доске, ldap — в каталоге.
+    """
+    ALTER TABLE users ADD COLUMN auth_source TEXT NOT NULL DEFAULT 'local';
+    """,
 ]
 
 
