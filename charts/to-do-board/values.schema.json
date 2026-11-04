@@ -105,6 +105,32 @@
               "type": "boolean"
             }
           }
+        },
+        "smtp": {
+          "type": "object",
+          "properties": {
+            "host": {
+              "type": "string"
+            },
+            "port": {
+              "type": ["string", "integer"],
+              "pattern": "^[0-9]*$"
+            },
+            "security": {
+              "type": "string",
+              "enum": ["starttls", "ssl", "none"]
+            },
+            "user": {
+              "type": "string"
+            },
+            "from": {
+              "type": "string",
+              "pattern": "^([^@\\s]+@[^@\\s]+)?$"
+            },
+            "caSecret": {
+              "type": "string"
+            }
+          }
         }
       }
     },

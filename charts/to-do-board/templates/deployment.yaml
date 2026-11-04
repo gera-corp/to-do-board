@@ -90,6 +90,28 @@ spec:
             {{- end }}
             {{- end }}
             {{- end }}
+            {{- with .Values.config.smtp }}
+            {{- if .host }}
+            - name: SMTP_HOST
+              value: {{ .host | quote }}
+            {{- with .port }}
+            - name: SMTP_PORT
+              value: {{ . | quote }}
+            {{- end }}
+            - name: SMTP_SECURITY
+              value: {{ .security | quote }}
+            {{- with .user }}
+            - name: SMTP_USER
+              value: {{ . | quote }}
+            {{- end }}
+            - name: SMTP_FROM
+              value: {{ required "config.smtp.from обязателен вместе с config.smtp.host" .from | quote }}
+            {{- if .caSecret }}
+            - name: SMTP_CA_FILE
+              value: /smtp-certs/ca.pem
+            {{- end }}
+            {{- end }}
+            {{- end }}
             {{- with include "to-do-board.publicUrl" . }}
             - name: TODO_PUBLIC_URL
               value: {{ . | quote }}
@@ -136,6 +158,11 @@ spec:
               mountPath: /certs
               readOnly: true
             {{- end }}
+            {{- if and .Values.config.smtp.host .Values.config.smtp.caSecret }}
+            - name: smtp-ca
+              mountPath: /smtp-certs
+              readOnly: true
+            {{- end }}
       volumes:
         - name: data
           {{- if .Values.persistence.enabled }}
@@ -152,6 +179,11 @@ spec:
         - name: ldap-ca
           secret:
             secretName: {{ .Values.config.ldap.caSecret }}
+        {{- end }}
+        {{- if and .Values.config.smtp.host .Values.config.smtp.caSecret }}
+        - name: smtp-ca
+          secret:
+            secretName: {{ .Values.config.smtp.caSecret }}
         {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:

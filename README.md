@@ -53,13 +53,14 @@ cp .env.example .env
 | `HOST` | `0.0.0.0` | listen address |
 | `PORT` | `8000` | port |
 | `TELEGRAM_BOT_TOKEN` | — | bot token; without it Telegram notifications are off |
-| `TELEGRAM_DIGEST_HOUR` | `9` | hour of the morning digest (server time) |
+| `DIGEST_HOUR` | `9` | hour of the morning digest in Telegram and by email (server time); the old name `TELEGRAM_DIGEST_HOUR` still works |
 | `TODO_PUBLIC_URL` | — | board address: links in messages and the return address after signing in with Google |
 | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | — | Google OAuth client; without them sign-in with Google is off |
 | `TODO_PASSWORD_LOGIN` | `true` | password sign-in |
 | `FORWARDED_ALLOW_IPS` | `127.0.0.1` | proxies whose `X-Forwarded-For` header is trusted |
 | `TODO_ALLOWED_NETWORKS` | — | addresses and subnets allowed to open the board, separated by commas; empty means everyone. Everyone else gets 403 |
 | `LDAP_URL` and other `LDAP_*` | — | sign-in through LDAP or Active Directory, see below |
+| `SMTP_HOST` and other `SMTP_*` | — | email notifications, see [Notifications](#notifications) |
 
 `TODO_ALLOWED_NETWORKS` is for a gateway that can't filter addresses itself. Behind a proxy, name it exactly in `FORWARDED_ALLOW_IPS`: the board refuses to start with `*`, and the proxy's own address is never allowed, so the board closes if the proxy stops passing the client address. A mistake in the list stops the start too. `/api/health` always answers.
 
@@ -75,8 +76,9 @@ cp .env.example .env
 - **Filters** by person and category, plus text search.
 - **Checklists inside a task**, such as a shopping list. Progress shows on the card. A recurring task carries its checklist over to the next repeat, unticked.
 - **Subtasks.** Split a big task into parts with their own assignees, due dates and points: "Kids' room renovation" → "Buy paint", "Paint the walls". Subtasks are regular cards labelled "↳ Kids' room renovation", and the parent shows progress ("▤ 1/3"). One level only: a subtask has no subtasks of its own. Deleting the parent turns its subtasks into standalone tasks.
-- **Links between tasks:** "waits for" / "blocks" and plain "related to". Cards show what a task is waiting for ("⏳ waits for: Buy paint"). When the last task it waited for reaches Done, the assignee gets "You can start" in Telegram. Cycles ("A waits for B, B waits for A") are rejected. The rules are soft: the board warns before starting a task that is still waiting, or closing one with unfinished subtasks, but doesn't forbid it.
+- **Links between tasks:** "waits for" / "blocks" and plain "related to". Cards show what a task is waiting for ("⏳ waits for: Buy paint"). When the last task it waited for reaches Done, its watchers get "You can start". Cycles ("A waits for B, B waits for A") are rejected. The rules are soft: the board warns before starting a task that is still waiting, or closing one with unfinished subtasks, but doesn't forbid it.
 - **History and comments.** A task shows who created, moved, reassigned and changed it, with a conversation next to it.
+- **Watching tasks**, as in Jira. The eye in a task's dialog shows how many people watch it; click it to start or stop watching. The author, the assignee and everyone who comments watch automatically. Watchers hear about everything that happens to the task in Telegram, by email or both.
 - **Points and leaderboard** (optional, per board). Each task is worth 1 to 8 points, which go to the assignee when it reaches Done. The leaderboard covers the week, the month and all time.
 - **Stats** under People: open tasks and tasks done this week per person.
 - **A tidy Done column.** Tasks finished more than 14 days ago hide behind "Show older".
@@ -155,7 +157,13 @@ certutil -ca.cert ca.cer
 certutil -encode ca.cer ca.pem
 ```
 
-## Telegram notifications
+## Notifications
+
+Watchers of a task (see Features) hear about everything that happens to it: comments, moves between columns, a new assignee, "You can start", field changes ("Due date: 5 Nov → 7 Nov"), checklist items, subtasks, links and deletion. Comments, assignments, moves, "You can start" and deletion arrive at once. Smaller changes are collected for 2 minutes and arrive as one message, so ticking ten checklist items is one message, not ten; a field changed and changed back in that time is not mentioned. You don't get notified about your own actions.
+
+Telegram and email get the same notifications. Undelivered ones wait in a queue in the database and are retried for up to 24 hours, so a restart or a mail server outage loses nothing. Links in messages open the task itself when `TODO_PUBLIC_URL` is set.
+
+### Telegram
 
 1. Create a bot with [@BotFather](https://t.me/BotFather) using `/newbot` and copy the token.
 2. Put the token into `.env`:
@@ -165,15 +173,29 @@ certutil -encode ca.cer ca.pem
    Then restart `./run.sh`.
 3. Each person opens People, clicks Connect Telegram and presses Start in the chat with the bot.
 
-The bot sends:
-- a new task or a task handed over to you;
-- a review request when your task moves to Review;
-- a note when a task you created or are assigned is done, with the points earned;
-- "You can start" when everything a task of yours was waiting for is done;
-- comments on your tasks;
-- a morning digest: what's due today, what's overdue and what's due tomorrow.
+Bot commands: `/tasks` lists your open tasks, `/stop` turns Telegram notifications off. The bot also sends a morning digest: what's due today, what's overdue and what's due tomorrow.
 
-You don't get notified about your own actions. Bot commands: `/tasks` lists your open tasks, `/stop` turns notifications off.
+### Email
+
+Point the board at your mail server in `.env`:
+
+```
+SMTP_HOST=mail.example.org
+SMTP_FROM=board@example.org
+SMTP_USER=board@example.org
+SMTP_PASSWORD=...
+```
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `SMTP_HOST` | — | mail server; without it email is off and hidden in the interface |
+| `SMTP_PORT` | `587`, `465` for `ssl` | port |
+| `SMTP_SECURITY` | `starttls` | `starttls`, `ssl` or `none` |
+| `SMTP_USER`, `SMTP_PASSWORD` | — | sign-in, if the server needs it |
+| `SMTP_FROM` | — | sender address, required |
+| `SMTP_CA_FILE` | — | root certificate of an internal CA; with Docker Compose put it into `./certs` and use `/certs/ca.pem` |
+
+The server certificate is always verified. Each person enters their own address in People: the board sends a confirmation link, valid for 24 hours, and nothing else goes to the address until it is confirmed. The address is visible only to its owner, not to other people or administrators. In the same place you can turn email notifications off and turn on the morning digest by email (off by default).
 
 ## Project layout
 
@@ -184,7 +206,10 @@ app/
   security.py    password hashing (PBKDF2), session tokens, sign-in rate limiting
   google.py      sign-in with Google (OpenID Connect)
   ldap_auth.py   sign-in through LDAP or Active Directory
-  telegram.py    the bot, notification queue, morning digest
+  telegram.py    the Telegram bot and its commands
+  notify.py      watchers, notification texts and the morning digest
+  outbox.py      notification queue: grouping, delivery, retries
+  mailer.py      sending email over SMTP
   i18n.py        English translations of server messages
   recurrence.py  next due date for recurring tasks
   config.py      reading .env
@@ -206,7 +231,10 @@ All endpoints except sign-in, first-time setup and health require the session co
 | GET/POST | `/api/setup` | check whether the first user is needed and which sign-in methods are on, or create that user |
 | POST | `/api/login`, `/api/logout` | sign in and out |
 | GET | `/api/auth/google/start`, `/api/auth/google/callback` | sign in with Google |
-| GET | `/api/me` | the current user |
+| GET | `/api/me` | the current user, with their own email settings |
+| PUT/DELETE | `/api/me/email` | send a confirmation link to a new address, or remove the address |
+| GET | `/api/email/confirm?token=` | confirm an address from the link in the email |
+| PATCH | `/api/me/notifications` | `email_notify`, `email_digest` |
 | GET/POST | `/api/users` | list people, add a person (administrator only) |
 | PATCH/DELETE | `/api/users/{id}` | change or delete a person |
 | GET/POST | `/api/boards` | list boards with their columns, create a board (administrator) |
@@ -223,6 +251,7 @@ All endpoints except sign-in, first-time setup and health require the session co
 | POST | `/api/tasks/{id}/checklist` | add a checklist item |
 | PATCH/DELETE | `/api/checklist/{id}` | change or delete an item |
 | GET | `/api/tasks/{id}/events` | history and comments |
+| POST/DELETE | `/api/tasks/{id}/watch` | start or stop watching a task |
 | POST | `/api/tasks/{id}/comments` | add a comment |
 | DELETE | `/api/events/{id}` | delete a comment (its author or an administrator) |
 | GET | `/api/leaderboard?period=week\|month\|all&board_id=` | points leaderboard |
@@ -299,11 +328,12 @@ Main chart values:
 | `ingress.className` | `traefik` | IngressClass |
 | `ingress.annotations` | cert-manager `letsencrypt-cloud-production` | Ingress annotations |
 | `config.timezone` | `UTC` | time zone for due dates and the morning digest |
-| `config.telegramDigestHour` | `9` | hour of the morning digest |
+| `config.telegramDigestHour` | `9` | hour of the morning digest in Telegram and by email |
 | `config.sqliteJournalMode` | `DELETE` | SQLite journal mode; `WAL` only on local disks, not NFS |
 | `config.googleClientId` | empty | Google OAuth client ID; empty turns sign-in with Google off |
 | `config.passwordLogin` | `true` | password sign-in |
 | `config.ldap` | off | sign-in through LDAP or Active Directory; put `LDAP_BIND_PASSWORD` into `vault.env` |
+| `config.smtp` | off | email notifications; put `SMTP_PASSWORD` into `vault.env`, `caSecret` is a Secret with `ca.pem` |
 | `config.trustedProxies` | `*` | proxies trusted for the client address (safe while the NetworkPolicy admits only the ingress controller) |
 | `vault.secretPath` | `secret/data/to-do-board` | secret in Vault (KV v2) |
 | `vault.env` | `TELEGRAM_BOT_TOKEN` | which secret keys become environment variables (add `GOOGLE_CLIENT_SECRET` for Google) |

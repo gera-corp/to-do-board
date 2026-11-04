@@ -9,6 +9,27 @@ and a Helm chart `oci://ghcr.io/gera-corp/charts/to-do-board` of the same versio
 The GitHub release notes are taken from the matching section below, so add an entry
 here before pushing a `vX.Y.Z` tag.
 
+## [0.9.0] - 2026-11-04
+
+### Added
+- Watching tasks, as in Jira: an eye in the task dialog shows how many people watch it and
+  turns watching on and off. The author, the assignee and everyone who comments watch
+  automatically; existing tasks get their authors, assignees and commenters as watchers.
+- Watchers hear about everything that happens to a task: comments, moves, a new assignee,
+  "You can start", field changes ("Due date: 5 Nov → 7 Nov"), checklist items, subtasks,
+  links and deletion. Small changes are collected for 2 minutes into one message.
+- Email notifications next to Telegram, with the same events, set up with `SMTP_*`. Each
+  person enters and confirms their own address; it is visible only to them. The morning
+  digest can go by email too.
+- Links in messages open the task itself (`#task=ID`).
+- `DIGEST_HOUR` sets the hour of the morning digest for both channels; `TELEGRAM_DIGEST_HOUR`
+  still works. Helm values `config.smtp.*`.
+
+### Changed
+- Notifications go to watchers rather than only to the author and the assignee, and wait in
+  a queue in the database: a restart or an outage loses nothing, and failed sends are
+  retried for up to 24 hours.
+
 ## [0.8.2] - 2026-11-02
 
 ### Added
@@ -173,6 +194,7 @@ here before pushing a `vX.Y.Z` tag.
 - Distroless non-root container image for amd64 and arm64, CI with tests, linters,
   SBOM, provenance and Trivy scanning, and a Helm chart with secrets from Vault.
 
+[0.9.0]: https://github.com/gera-corp/to-do-board/compare/v0.8.2...v0.9.0
 [0.8.2]: https://github.com/gera-corp/to-do-board/compare/v0.8.1...v0.8.2
 [0.8.1]: https://github.com/gera-corp/to-do-board/compare/v0.8.0...v0.8.1
 [0.8.0]: https://github.com/gera-corp/to-do-board/compare/v0.7.2...v0.8.0

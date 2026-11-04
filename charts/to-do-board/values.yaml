@@ -46,7 +46,7 @@ securityContext:
 config:
   # Часовой пояс сервера: по нему считаются «сегодня» и время утренней сводки.
   timezone: UTC
-  # Час утренней сводки в Telegram (0–23).
+  # Час утренней сводки в Telegram и на почту (0–23).
   telegramDigestHour: 9
   # Адрес доски для ссылок в сообщениях. Пусто — https://<ingress.host>.
   publicUrl: ""
@@ -75,6 +75,19 @@ config:
     linkExisting: false
     # Не проверять сертификат сервера. Пароли можно перехватить, лучше caSecret.
     tlsInsecure: false
+  # Уведомления на почту. Пустой host — выключены.
+  # Пароль передаётся через vault.env как SMTP_PASSWORD.
+  smtp:
+    host: ""
+    # Пусто — 587, для security: ssl — 465.
+    port: ""
+    # starttls, ssl или none.
+    security: starttls
+    user: ""
+    # Адрес отправителя, обязателен вместе с host.
+    from: ""
+    # Secret с ключом ca.pem: корневой сертификат внутреннего центра сертификации.
+    caSecret: ""
   # Чьим заголовкам X-Forwarded-For верить при определении адреса посетителя
   # (нужно для лимита попыток входа). "*" безопасно, пока networkPolicy пускает
   # к поду только ingress-контроллер.
