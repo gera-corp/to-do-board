@@ -981,6 +981,9 @@ def create_app(db_path: Optional[str] = None, notifier=None, directory=None,
         if data.assignee_id:
             watch(conn, task_id, data.assignee_id)
         task = get_task_row(conn, task_id)
+        if task["parent_id"]:
+            ctx.record(get_task_row(conn, task["parent_id"]),
+                       {"kind": "subtask", "action": "added", "title": task["title"]})
         if task["assignee_id"]:
             notify_assigned(ctx, task)
         return task_full(conn, task_id)
@@ -1019,6 +1022,15 @@ def create_app(db_path: Optional[str] = None, notifier=None, directory=None,
         edited = [k for k in EDITABLE_FIELDS if k in changes]
         if edited:
             ctx.log(task_id, "edited", fields=edited)
+            fresh = get_task_row(conn, task_id)
+            for field in edited:
+                if field != "parent_id":
+                    ctx.record(fresh, {"kind": "field", "field": field, "old": task[field], "new": changes[field]})
+            if "parent_id" in changes:
+                for parent_id, action in ((task["parent_id"], "removed"), (changes["parent_id"], "added")):
+                    if parent_id:
+                        ctx.record(get_task_row(conn, parent_id),
+                                   {"kind": "subtask", "action": action, "title": fresh["title"]})
         if column is not None and column["id"] != task["column_id"]:
             place_task(ctx, task, column)
         if changes:
@@ -1038,8 +1050,13 @@ def create_app(db_path: Optional[str] = None, notifier=None, directory=None,
 
     @app.delete("/api/tasks/{task_id}", status_code=204)
     def delete_task(task_id: int, ctx: Ctx = Depends(get_ctx)):
-        if ctx.conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,)).rowcount == 0:
-            raise HTTPException(404, "Задача не найдена")
+        task = get_task_row(ctx.conn, task_id)
+        # Наблюдатели узнают об удалении; их список читается до того, как он исчезнет с задачей.
+        ctx.record(task, {"kind": "deleted"})
+        if task["parent_id"]:
+            ctx.record(get_task_row(ctx.conn, task["parent_id"]),
+                       {"kind": "subtask", "action": "removed", "title": task["title"]})
+        ctx.conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
 
     # Глазик: каждый включает и выключает наблюдение только за себя.
     @app.post("/api/tasks/{task_id}/watch")
@@ -1191,7 +1208,7 @@ def create_app(db_path: Optional[str] = None, notifier=None, directory=None,
         task = get_task_row(conn, task_id)
         if data.task_id == task_id:
             raise HTTPException(400, "Задачу нельзя связать с самой собой")
-        other = conn.execute("SELECT board_id FROM tasks WHERE id = ?", (data.task_id,)).fetchone()
+        other = conn.execute("SELECT * FROM tasks WHERE id = ?", (data.task_id,)).fetchone()
         if other is None:
             raise HTTPException(400, "Такой задачи нет")
         if other["board_id"] != task["board_id"]:
@@ -1212,6 +1229,9 @@ def create_app(db_path: Optional[str] = None, notifier=None, directory=None,
 
         ctx.log(task_id, "linked", type=data.kind, other=data.task_id)
         ctx.log(data.task_id, "linked", type=INVERSE_LINK[data.kind], other=task_id)
+        ctx.record(task, {"kind": "link", "action": "added", "type": data.kind, "other_title": other["title"]})
+        ctx.record(other, {"kind": "link", "action": "added", "type": INVERSE_LINK[data.kind],
+                           "other_title": task["title"]})
         return task_full(conn, task_id)
 
     @app.delete("/api/links/{link_id}", status_code=204)
@@ -1222,6 +1242,10 @@ def create_app(db_path: Optional[str] = None, notifier=None, directory=None,
         ctx.conn.execute("DELETE FROM task_links WHERE id = ?", (link_id,))
         ctx.log(link["from_id"], "unlinked", type=link["kind"], other=link["to_id"])
         ctx.log(link["to_id"], "unlinked", type=INVERSE_LINK[link["kind"]], other=link["from_id"])
+        frm, to = get_task_row(ctx.conn, link["from_id"]), get_task_row(ctx.conn, link["to_id"])
+        ctx.record(frm, {"kind": "link", "action": "removed", "type": link["kind"], "other_title": to["title"]})
+        ctx.record(to, {"kind": "link", "action": "removed", "type": INVERSE_LINK[link["kind"]],
+                        "other_title": frm["title"]})
 
     # --- чек-листы ---
 
@@ -1233,27 +1257,34 @@ def create_app(db_path: Optional[str] = None, notifier=None, directory=None,
 
     @app.post("/api/tasks/{task_id}/checklist", status_code=201)
     def add_item(task_id: int, data: TextIn, ctx: Ctx = Depends(get_ctx)):
-        get_task_row(ctx.conn, task_id)
+        task = get_task_row(ctx.conn, task_id)
         if len(data.text) > 200:
             raise HTTPException(422, "Пункт длиннее 200 символов")
         add_checklist(ctx.conn, task_id, [data.text])
         row = ctx.conn.execute(
             "SELECT * FROM checklist_items WHERE task_id = ? ORDER BY id DESC LIMIT 1", (task_id,)
         ).fetchone()
+        ctx.record(task, {"kind": "checklist", "action": "added", "text": row["text"]})
         return item_out(row)
 
     @app.patch("/api/checklist/{item_id}")
     def update_item(item_id: int, data: ChecklistUpdate, ctx: Ctx = Depends(get_ctx)):
-        get_item(ctx.conn, item_id)
-        if data.text is not None:
+        item = get_item(ctx.conn, item_id)
+        task = get_task_row(ctx.conn, item["task_id"])
+        if data.text is not None and data.text.strip() != item["text"]:
             ctx.conn.execute("UPDATE checklist_items SET text = ? WHERE id = ?", (data.text.strip(), item_id))
-        if data.done is not None:
+            ctx.record(task, {"kind": "checklist", "action": "renamed", "text": data.text.strip(),
+                              "old_text": item["text"]})
+        if data.done is not None and int(data.done) != item["done"]:
             ctx.conn.execute("UPDATE checklist_items SET done = ? WHERE id = ?", (int(data.done), item_id))
+            text = data.text.strip() if data.text is not None else item["text"]
+            ctx.record(task, {"kind": "checklist", "action": "checked" if data.done else "unchecked", "text": text})
         return item_out(get_item(ctx.conn, item_id))
 
     @app.delete("/api/checklist/{item_id}", status_code=204)
     def delete_item(item_id: int, ctx: Ctx = Depends(get_ctx)):
-        get_item(ctx.conn, item_id)
+        item = get_item(ctx.conn, item_id)
+        ctx.record(get_task_row(ctx.conn, item["task_id"]), {"kind": "checklist", "action": "removed", "text": item["text"]})
         ctx.conn.execute("DELETE FROM checklist_items WHERE id = ?", (item_id,))
 
     # --- история и комментарии ---

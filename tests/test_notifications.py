@@ -126,3 +126,104 @@ def test_link_added_when_public_url_set(db_path, notifier, clock, monkeypatch):
     task = make_task(admin, assignee_id=petya["id"])
     deliver(app)
     assert notifier.sent[-1][1].endswith(f"\n\nhttps://b.example/#task={task['id']}")
+
+
+# ---------- правки, чек-лист, связи: группой ----------
+
+@pytest.fixture
+def watched(app, admin, people, notifier):
+    """Задача Мамы, исполнитель Петя; Петя действует, Мама (чат 100) получает."""
+    p, petya = people["petya"]
+    task = make_task(admin, assignee_id=petya["id"], checklist=["Пыль", "Пол", "Окна", "Двери", "Ковёр"])
+    deliver(app)
+    notifier.sent.clear()
+    return p, task
+
+
+def to_mama(notifier):
+    return [text for chat, text in notifier.sent if chat == 100]
+
+
+def test_one_save_one_message(app, watched, notifier):
+    p, task = watched
+    p.patch(f"/api/tasks/{task['id']}", json={"due_date": "2026-11-07", "priority": "high"})
+    deliver(app, 120)
+    [text] = to_mama(notifier)
+    assert "7 Nov" in text and "Priority" in text and "Due date" in text
+
+
+def test_edits_wait_for_window(app, watched, notifier):
+    p, task = watched
+    p.patch(f"/api/tasks/{task['id']}", json={"due_date": "2026-11-07"})
+    deliver(app, 119)
+    assert to_mama(notifier) == []
+    deliver(app, 120)
+    assert len(to_mama(notifier)) == 1
+
+
+def test_checklist_clicks_grouped(app, watched, notifier):
+    p, task = watched
+    for item in task["checklist"]:
+        p.patch(f"/api/checklist/{item['id']}", json={"done": True})
+    deliver(app, 120)
+    [text] = to_mama(notifier)
+    assert all(word in text for word in ("Пыль", "Пол", "Окна", "Двери", "Ковёр"))
+
+
+def test_immediate_event_carries_pending_edits(app, watched, notifier):
+    p, task = watched
+    p.patch(f"/api/tasks/{task['id']}", json={"priority": "high"})
+    p.post(f"/api/tasks/{task['id']}/comments", json={"text": "Поднял приоритет"})
+    deliver(app)
+    [text] = to_mama(notifier)
+    assert "Priority" in text and "Поднял приоритет" in text
+
+
+def test_change_reverted_inside_window_is_omitted(app, watched, notifier, db_path):
+    p, task = watched
+    p.patch(f"/api/tasks/{task['id']}", json={"priority": "high"})
+    p.patch(f"/api/tasks/{task['id']}", json={"priority": "normal"})
+    deliver(app, 120)
+    assert to_mama(notifier) == []
+    assert db.connect(db_path).execute("SELECT COUNT(*) FROM outbox").fetchone()[0] == 0
+
+
+def test_description_change_has_no_text(app, watched, notifier):
+    p, task = watched
+    p.patch(f"/api/tasks/{task['id']}", json={"description": "секретный код 1234"})
+    deliver(app, 120)
+    [text] = to_mama(notifier)
+    assert "Description" in text and "1234" not in text
+
+
+def test_delete_flushes_pending_with_snapshot_title(app, admin, watched, notifier):
+    p, task = watched
+    admin.post(f"/api/tasks/{task['id']}/watch")
+    p.patch(f"/api/tasks/{task['id']}", json={"title": "Генеральная уборка"})
+    p.delete(f"/api/tasks/{task['id']}")
+    deliver(app)
+    [text] = to_mama(notifier)
+    assert "Генеральная уборка" in text and "🗑" in text and "Title" in text
+
+
+def test_subtask_and_link_changes_reach_parent_watchers(app, admin, watched, notifier):
+    p, task = watched
+    other = make_task(admin, title="Купить краску")
+    deliver(app)
+    notifier.sent.clear()
+    p.post("/api/tasks", json={"title": "Протереть полки", "parent_id": task["id"]})
+    p.post(f"/api/tasks/{task['id']}/links", json={"kind": "blocked_by", "task_id": other["id"]})
+    deliver(app, 120)
+    texts = to_mama(notifier)
+    parent_text = next(t for t in texts if "Протереть полки" in t)
+    assert "Купить краску" in parent_text
+
+
+def test_two_actors_in_one_group_are_named(app, admin, people, watched, notifier):
+    p, task = watched
+    v, _ = people["vasya"]
+    p.patch(f"/api/tasks/{task['id']}", json={"priority": "high"})
+    v.patch(f"/api/tasks/{task['id']}", json={"due_date": "2026-11-07"})
+    deliver(app, 120)
+    [text] = to_mama(notifier)
+    assert "Petya" in text and "Vasya" in text
