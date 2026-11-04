@@ -6,7 +6,7 @@ from app import db
 from app.main import create_app
 from app.telegram import build_digest, handle_update
 
-from .helpers import board, login, make_task, make_user
+from .helpers import deliver, board, login, make_task, make_user
 
 
 def link_telegram(client, db_path, chat_id):
@@ -191,20 +191,27 @@ def test_notifications(app, admin, db_path, notifier):
     link_telegram(petya_client, db_path, 200)
 
     task = make_task(admin, title="Вынести мусор", assignee_id=petya["id"])
+    deliver(app)
     assert notifier.sent[-1][0] == 200 and "Вынести мусор" in notifier.sent[-1][1]
 
+    deliver(app)
     notifier.sent.clear()
     make_task(admin, title="Сам себе", assignee_id=admin.get("/api/me").json()["id"])
+    deliver(app)
     assert notifier.sent == []  # о своих действиях не уведомляем
 
     petya_client.post(f"/api/tasks/{task['id']}/move", json={"status": "review", "index": 0})
+    deliver(app)
     assert notifier.sent[-1][0] == 100 and "review" in notifier.sent[-1][1]
 
     admin.post(f"/api/tasks/{task['id']}/move", json={"status": "done", "index": 0})
+    deliver(app)
     assert notifier.sent[-1][0] == 200 and "+1" in notifier.sent[-1][1]
 
+    deliver(app)
     notifier.sent.clear()
     petya_client.post(f"/api/tasks/{task['id']}/comments", json={"text": "Готово!"})
+    deliver(app)
     assert notifier.sent == [(100, notifier.sent[0][1])] and "Готово!" in notifier.sent[0][1]
 
 

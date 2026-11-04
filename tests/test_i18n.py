@@ -8,7 +8,7 @@ from app import db
 from app.i18n import EN, tr
 from app.telegram import build_digest, handle_update
 
-from .helpers import login, make_task, make_user
+from .helpers import deliver, login, make_task, make_user
 from .test_features import link_telegram
 
 APP_DIR = Path(__file__).parent.parent / "app"
@@ -74,10 +74,13 @@ def test_notifications_use_each_recipients_language(app, admin, db_path, notifie
     admin.get("/api/me", headers={"Accept-Language": "en"})
 
     task = make_task(admin, title="Вынести мусор", assignee_id=petya["id"], points=3)
+    deliver(app)
     assert notifier.sent[-1] == (200, "📌 Мама поручает вам: «Вынести мусор»")
     petya_client.patch(f"/api/tasks/{task['id']}", json={"status": "review"})
+    deliver(app)
     assert notifier.sent[-1] == (100, "👀 Petya asks you to review: «Вынести мусор»")
     admin.patch(f"/api/tasks/{task['id']}", json={"status": "done"})
+    deliver(app)
     assert notifier.sent[-1] == (200, "✅ Сделано: «Вынести мусор», +3 очка\nОтметил(а): Мама")
 
 

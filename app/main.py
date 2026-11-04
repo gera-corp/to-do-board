@@ -8,9 +8,8 @@ import sqlite3
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
-from html import escape
 from pathlib import Path
-from typing import Literal, Optional
+from typing import Callable, Literal, Optional
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.responses import JSONResponse, PlainTextResponse, RedirectResponse
@@ -19,10 +18,11 @@ from pydantic import BaseModel, Field, field_validator
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from . import db, google
-from .notify import unwatch, watch, watcher_ids
+from .notify import record, unwatch, watch, watcher_ids
+from .outbox import Dispatcher, TelegramChannel
 from .config import load_env_file
 from .ldap_auth import LdapUnavailable, LdapUser, make_directory
-from .i18n import normalize_lang, points_word, tr
+from .i18n import normalize_lang, tr
 from .recurrence import next_due
 from .security import (
     DECOY_PASSWORD_HASH,
@@ -33,7 +33,7 @@ from .security import (
     parse_networks,
     verify_password,
 )
-from .telegram import NullNotifier, TelegramBot, short_date
+from .telegram import NullNotifier, TelegramBot
 
 log = logging.getLogger("todo")
 
@@ -404,11 +404,8 @@ class Ctx:
 
     conn: sqlite3.Connection
     user: sqlite3.Row
-    notifier: object
-
-    @property
-    def actor(self) -> str:
-        return escape(self.user["display_name"])
+    channels: list
+    clock: Callable[[], datetime]
 
     def log(self, task_id: int, kind: str, **payload) -> int:
         cur = self.conn.execute(
@@ -417,35 +414,16 @@ class Ctx:
         )
         return cur.lastrowid
 
-    def notify(self, user_ids, render) -> None:
-        """Шлёт сообщение указанным людям, кроме того, кто сам совершил действие.
-
-        render(lang) собирает текст на языке получателя.
-        """
-        ids = {u for u in user_ids if u is not None and u != self.user["id"]}
-        if not ids or not self.notifier.enabled:
-            return
-        marks = ",".join("?" * len(ids))
-        rows = self.conn.execute(
-            f"SELECT telegram_chat_id, ui_lang FROM users WHERE id IN ({marks}) AND telegram_chat_id IS NOT NULL",
-            tuple(ids),
-        ).fetchall()
-        for r in rows:
-            self.notifier.send(r["telegram_chat_id"], render(r["ui_lang"]))
-
-
-def quoted(task) -> str:
-    return f"«{escape(task['title'])}»"
+    def record(self, task, change: dict) -> None:
+        """Сообщает наблюдателям задачи об изменении (кроме того, кто его сделал)."""
+        record(self.conn, task, self.user, change, self.clock(), self.channels)
 
 
 def notify_assigned(ctx: Ctx, task) -> None:
-    def render(lang: str) -> str:
-        text = tr("📌 {actor} поручает вам: {task}", lang, actor=ctx.actor, task=quoted(task))
-        if task["due_date"]:
-            text += "\n" + tr("Срок: {date}", lang, date=short_date(task["due_date"], lang))
-        return text
-
-    ctx.notify([task["assignee_id"]], render)
+    name = None
+    if task["assignee_id"]:
+        name = ctx.conn.execute("SELECT display_name FROM users WHERE id = ?", (task["assignee_id"],)).fetchone()[0]
+    ctx.record(task, {"kind": "assigned", "to": task["assignee_id"], "to_name": name, "due_date": task["due_date"]})
 
 
 def place_task(ctx: Ctx, task: sqlite3.Row, column: sqlite3.Row, index: Optional[int] = None) -> None:
@@ -462,33 +440,23 @@ def place_task(ctx: Ctx, task: sqlite3.Row, column: sqlite3.Row, index: Optional
 
 
 def change_status(ctx: Ctx, task_id: int, old_column: sqlite3.Row, column: sqlite3.Row) -> None:
-    """Последствия переноса: история; при смене роли — время выполнения, уведомления, повтор."""
+    """Последствия переноса: история, уведомления; при смене роли — время выполнения, повтор."""
     conn = ctx.conn
     old, new = old_column["role"], column["role"]
     ctx.log(task_id, "status", **{"from": old, "to": new, "from_title": old_column["title"], "to_title": column["title"]})
+    task = get_task_row(conn, task_id)
+    board = conn.execute("SELECT points_enabled FROM boards WHERE id = ?", (task["board_id"],)).fetchone()
+    pts = task["points"] if task["assignee_id"] and board["points_enabled"] else 0
+    ctx.record(task, {"kind": "moved", "from_role": old, "to_role": new, "from_title": old_column["title"],
+                      "to_title": column["title"], "points": pts})
     if new == old:
         return
-    task = get_task_row(conn, task_id)
 
     if new != "done":
         conn.execute("UPDATE tasks SET completed_at = NULL WHERE id = ?", (task_id,))
-        if new == "review":
-            ctx.notify([task["creator_id"]], lambda lang: tr(
-                "👀 {actor} просит проверить: {task}", lang, actor=ctx.actor, task=quoted(task)))
         return
 
     conn.execute("UPDATE tasks SET completed_at = ? WHERE id = ?", (now_iso(), task_id))
-    board = conn.execute("SELECT points_enabled FROM boards WHERE id = ?", (task["board_id"],)).fetchone()
-    pts = task["points"] if task["assignee_id"] and board["points_enabled"] else 0
-
-    def render(lang: str) -> str:
-        text = tr("✅ Сделано: {task}", lang, task=quoted(task))
-        if pts:
-            text += tr(", +{n} {points}", lang, n=pts, points=points_word(pts, lang))
-        return text + "\n" + tr("Отметил(а): {actor}", lang, actor=ctx.actor)
-
-    ctx.notify([task["creator_id"], task["assignee_id"]], render)
-
     notify_unblocked(ctx, task)
     if task["recurrence"] != "none":
         spawn_next(ctx, task)
@@ -507,10 +475,8 @@ def notify_unblocked(ctx: Ctx, done_task: sqlite3.Row) -> None:
                WHERE l.kind = 'blocks' AND l.to_id = ? AND b.status != 'done' LIMIT 1""",
             (task["id"],),
         ).fetchone()
-        if not still_blocked and task["assignee_id"]:
-            ctx.notify([task["assignee_id"]], lambda lang, task=task: (
-                tr("🔓 Можно начинать: {task}", lang, task=quoted(task)) + "\n"
-                + tr("Готово: {task}", lang, task=quoted(done_task))))
+        if not still_blocked:
+            ctx.record(task, {"kind": "unblocked", "done_title": done_task["title"]})
 
 
 def spawn_next(ctx: Ctx, task: sqlite3.Row) -> None:
@@ -598,7 +564,8 @@ def ldap_local_user(conn: sqlite3.Connection, info: LdapUser, link_existing: boo
     return conn.execute("SELECT * FROM users WHERE id = ?", (row["id"],)).fetchone()
 
 
-def create_app(db_path: Optional[str] = None, notifier=None, directory=None) -> FastAPI:
+def create_app(db_path: Optional[str] = None, notifier=None, directory=None,
+               clock: Optional[Callable[[], datetime]] = None) -> FastAPI:
     load_env_file()
     db_path = db_path or os.environ.get("TODO_DB") or str(Path("data") / "tasks.db")
     notifier = notifier or make_notifier()
@@ -620,13 +587,20 @@ def create_app(db_path: Optional[str] = None, notifier=None, directory=None) -> 
     account_limiter = LoginLimiter(max_failures=10)
     ip_limiter = LoginLimiter(max_failures=30)
 
+    clock = clock or (lambda: datetime.now(timezone.utc))
+    channels = [TelegramChannel(notifier)]
+    dispatcher = Dispatcher(db_path, channels, public_url or None, clock)
+
     @asynccontextmanager
     async def lifespan(_: FastAPI):
         notifier.start(db_path)
+        dispatcher.start()
         yield
+        dispatcher.stop()
         notifier.stop()
 
     app = FastAPI(title="Task Board", lifespan=lifespan)
+    app.state.dispatcher = dispatcher
 
     # Шлюз не всегда умеет фильтровать адреса, поэтому доступ можно ограничить здесь.
     allowed_networks = parse_networks(os.environ.get("TODO_ALLOWED_NETWORKS"))
@@ -694,7 +668,7 @@ def create_app(db_path: Optional[str] = None, notifier=None, directory=None) -> 
         return user
 
     def get_ctx(user: sqlite3.Row = Depends(current_user), conn: sqlite3.Connection = Conn) -> Ctx:
-        return Ctx(conn, user, notifier)
+        return Ctx(conn, user, channels, clock)
 
     def start_session(conn: sqlite3.Connection, response: Response, user_id: int) -> None:
         token = new_token()
@@ -1041,7 +1015,7 @@ def create_app(db_path: Optional[str] = None, notifier=None, directory=None) -> 
             ctx.log(task_id, "assigned", **{"from": task["assignee_id"], "to": changes["assignee_id"]})
             if changes["assignee_id"]:
                 watch(conn, task_id, changes["assignee_id"])
-                notify_assigned(ctx, get_task_row(conn, task_id))
+            notify_assigned(ctx, get_task_row(conn, task_id))
         edited = [k for k in EDITABLE_FIELDS if k in changes]
         if edited:
             ctx.log(task_id, "edited", fields=edited)
@@ -1297,11 +1271,7 @@ def create_app(db_path: Optional[str] = None, notifier=None, directory=None) -> 
         task = get_task_row(ctx.conn, task_id)
         event_id = ctx.log(task_id, "comment", text=data.text)
         watch(ctx.conn, task_id, ctx.user["id"])
-        ctx.notify(
-            [task["assignee_id"], task["creator_id"]],
-            lambda lang: tr("💬 {actor} о задаче {task}:", lang, actor=ctx.actor, task=quoted(task))
-            + "\n" + escape(data.text),
-        )
+        ctx.record(task, {"kind": "comment", "text": data.text})
         return event_out(ctx.conn.execute("SELECT * FROM task_events WHERE id = ?", (event_id,)).fetchone())
 
     @app.delete("/api/events/{event_id}", status_code=204)

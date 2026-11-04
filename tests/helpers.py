@@ -1,3 +1,5 @@
+from datetime import timedelta
+
 from fastapi.testclient import TestClient
 
 
@@ -25,3 +27,9 @@ def board(client):
     for t in client.get("/api/tasks").json():
         cols[t["status"]].append(t)
     return cols
+
+
+def deliver(app, seconds=0):
+    """Отправляет всё, что созрело в очереди уведомлений через seconds секунд."""
+    dispatcher = app.state.dispatcher
+    return dispatcher.deliver_due(dispatcher.clock() + timedelta(seconds=seconds))

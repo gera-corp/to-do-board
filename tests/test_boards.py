@@ -4,7 +4,7 @@ from app import db
 from app.db import MIGRATIONS
 from app.main import create_app
 
-from .helpers import login, make_task, make_user
+from .helpers import deliver, login, make_task, make_user
 from .test_features import link_telegram
 
 
@@ -236,8 +236,10 @@ def test_review_role_notifies_author_from_custom_column(app, admin, db_path, not
     petya_client = login(app, "petya", "pass1234")
     link_telegram(admin, db_path, 100)
     task = make_task(admin, board_id=board["id"], assignee_id=petya["id"])
+    deliver(app)
     notifier.sent.clear()
     petya_client.post(f"/api/tasks/{task['id']}/move", json={"column_id": qa["id"], "index": 0})
+    deliver(app)
     assert notifier.sent[-1][0] == 100 and "review" in notifier.sent[-1][1]
 
 
@@ -248,6 +250,7 @@ def test_points_can_be_turned_off_per_board(app, admin, db_path, notifier):
     link_telegram(login(app, "petya", "pass1234"), db_path, 200)
     task = make_task(admin, board_id=board["id"], assignee_id=petya["id"], points=5)
     admin.patch(f"/api/tasks/{task['id']}", json={"status": "done"})
+    deliver(app)
     assert "+5" not in notifier.sent[-1][1]
     assert admin.get(f"/api/leaderboard?board_id={board['id']}").json()[0]["points"] == 0
 

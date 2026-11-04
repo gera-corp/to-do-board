@@ -1,6 +1,6 @@
 from app import db
 
-from .helpers import board, make_task, make_user
+from .helpers import deliver, board, make_task, make_user
 from .test_features import link_telegram
 
 
@@ -136,11 +136,14 @@ def test_unblocked_task_owner_is_notified(app, admin, db_path, notifier):
     paint = make_task(admin, title="Покрасить стены", assignee_id=petya["id"])
     link(admin, paint["id"], "blocked_by", buy["id"])
     link(admin, paint["id"], "blocked_by", sand["id"])
+    deliver(app)
     notifier.sent.clear()
 
     admin.patch(f"/api/tasks/{buy['id']}", json={"status": "done"})
+    deliver(app)
     assert notifier.sent == []  # ещё ждёт шкурку
     admin.post(f"/api/tasks/{sand['id']}/move", json={"status": "done", "index": 0})
+    deliver(app)
     assert len(notifier.sent) == 1
     chat, text = notifier.sent[0]
     assert chat == 300 and "You can start" in text and "Покрасить стены" in text

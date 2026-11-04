@@ -1,3 +1,5 @@
+from datetime import datetime, timezone
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -14,11 +16,29 @@ class FakeNotifier:
     def send(self, chat_id, text):
         self.sent.append((chat_id, text))
 
+    def send_now(self, chat_id, text):
+        self.sent.append((chat_id, text))
+
     def start(self, db_path):
         pass
 
     def stop(self):
         pass
+
+
+class FakeClock:
+    """Время, которое двигает сам тест."""
+
+    def __init__(self):
+        self.now = datetime(2026, 11, 4, 9, 0, tzinfo=timezone.utc)
+
+    def __call__(self):
+        return self.now
+
+
+@pytest.fixture
+def clock():
+    return FakeClock()
 
 
 @pytest.fixture
@@ -32,8 +52,8 @@ def db_path(tmp_path):
 
 
 @pytest.fixture
-def app(db_path, notifier):
-    return create_app(db_path, notifier=notifier)
+def app(db_path, notifier, clock):
+    return create_app(db_path, notifier=notifier, clock=clock)
 
 
 @pytest.fixture

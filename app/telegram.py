@@ -42,6 +42,9 @@ class NullNotifier:
     def send(self, chat_id: int, text: str) -> None:
         pass
 
+    def send_now(self, chat_id: int, text: str) -> None:
+        pass
+
     def start(self, db_path: str) -> None:
         pass
 
@@ -171,6 +174,10 @@ class TelegramBot:
         if not body.get("ok"):
             raise RuntimeError(body.get("description", "Telegram API error"))
         return body["result"]
+
+    def send_now(self, chat_id: int, text: str) -> None:
+        """Отправляет сразу; ошибку получает вызывающий, чтобы повторить позже."""
+        self.call("sendMessage", chat_id=chat_id, text=text, parse_mode="HTML", disable_web_page_preview=True)
 
     def send(self, chat_id: int, text: str) -> None:
         if self.public_url:

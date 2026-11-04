@@ -94,6 +94,9 @@ EN = {
     "Сегодня": "Today",
     "Просрочено": "Overdue",
     "Завтра": "Tomorrow",
+    "👤 {actor} снимает исполнителя: {task}": "👤 {actor} removed the assignee: {task}",
+    "👤 {actor} назначает {name}: {task}": "👤 {actor} assigned {name}: {task}",
+    "➡️ {actor} переносит {task}: {old} → {new}": "➡️ {actor} moved {task}: {old} → {new}",
 }
 
 MONTHS = {
