@@ -233,7 +233,7 @@ compose.yaml     запуск через Docker Compose
 | GET | `/api/auth/google/start`, `/api/auth/google/callback` | вход через Google |
 | GET | `/api/me` | текущий пользователь вместе с его настройками почты |
 | PUT/DELETE | `/api/me/email` | отправить ссылку подтверждения на новый адрес или удалить адрес |
-| GET | `/api/email/confirm?token=` | подтвердить адрес по ссылке из письма |
+| POST | `/api/email/confirm` | подтвердить адрес с `{token}` из ссылки в письме (ссылка открывает доску, а та переспрашивает, поэтому почтовые сканеры, открывающие ссылки, ничего не подтверждают) |
 | PATCH | `/api/me/notifications` | `email_notify`, `email_digest` |
 | GET/POST | `/api/users` | список пользователей и добавление (только администратор) |
 | PATCH/DELETE | `/api/users/{id}` | изменение и удаление пользователя |

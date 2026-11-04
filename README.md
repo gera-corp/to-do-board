@@ -233,7 +233,7 @@ All endpoints except sign-in, first-time setup and health require the session co
 | GET | `/api/auth/google/start`, `/api/auth/google/callback` | sign in with Google |
 | GET | `/api/me` | the current user, with their own email settings |
 | PUT/DELETE | `/api/me/email` | send a confirmation link to a new address, or remove the address |
-| GET | `/api/email/confirm?token=` | confirm an address from the link in the email |
+| POST | `/api/email/confirm` | confirm an address with `{token}` from the link in the email (the link opens the board, which asks before confirming, so mail scanners that open links confirm nothing) |
 | PATCH | `/api/me/notifications` | `email_notify`, `email_digest` |
 | GET/POST | `/api/users` | list people, add a person (administrator only) |
 | PATCH/DELETE | `/api/users/{id}` | change or delete a person |
