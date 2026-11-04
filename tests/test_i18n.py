@@ -6,7 +6,8 @@ from fastapi.testclient import TestClient
 
 from app import db
 from app.i18n import EN, tr
-from app.telegram import build_digest, handle_update
+from app.notify import build_digest
+from app.telegram import handle_update
 
 from .helpers import deliver, login, make_task, make_user
 from .test_features import link_telegram
@@ -103,7 +104,8 @@ def test_digest_in_users_language(admin, db_path):
     make_task(admin, title="Полить цветы", assignee_id=me["id"], due_date="2026-10-16")
     conn = db.connect(db_path)
     try:
-        [(_, text)] = build_digest(conn, date(2026, 10, 17))
+        [(_, message)] = build_digest(conn, date(2026, 10, 17))
+        text = "\n".join(message.lines)
     finally:
         conn.close()
     assert text.startswith("☀️ Good morning!") and "Overdue" in text and "due 16 Oct" in text

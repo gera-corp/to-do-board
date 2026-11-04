@@ -4,7 +4,8 @@ from fastapi.testclient import TestClient
 
 from app import db
 from app.main import create_app
-from app.telegram import build_digest, handle_update
+from app.notify import build_digest
+from app.telegram import handle_update
 
 from .helpers import deliver, board, login, make_task, make_user
 
@@ -226,9 +227,10 @@ def test_morning_digest(admin, db_path):
     admin.patch(f"/api/tasks/{done['id']}", json={"status": "done"})
 
     conn = db.connect(db_path)
-    [(chat, text)] = build_digest(conn, today)
+    [(user_id, message)] = build_digest(conn, today)
     conn.close()
-    assert chat == 42
+    text = "\n".join(message.lines)
+    assert user_id == me["id"]
     assert "Сегодняшняя" in text and "Просроченная" in text
     assert "Через неделю" not in text and "Сделанная" not in text
 

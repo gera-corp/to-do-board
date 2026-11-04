@@ -9,7 +9,9 @@ from typing import Callable, Optional, Protocol
 
 from . import db
 from .i18n import tr
-from .notify import Message, iso, render
+import json
+
+from .notify import Message, build_digest, iso, render
 
 log = logging.getLogger("outbox")
 
@@ -44,6 +46,9 @@ class TelegramChannel:
             return None
         return str(user["telegram_chat_id"])
 
+    def digest_address(self, user: sqlite3.Row) -> Optional[str]:
+        return self.address(user)
+
     def deliver(self, address: str, message: Message, link: Optional[str]) -> None:
         text = "\n".join(message.lines)
         if link:
@@ -61,6 +66,10 @@ class EmailChannel:
 
     def address(self, user: sqlite3.Row) -> Optional[str]:
         return user["email"] if user["email"] and user["email_notify"] else None
+
+    def digest_address(self, user: sqlite3.Row) -> Optional[str]:
+        # Сводка на почту — отдельная настройка, по умолчанию выключена.
+        return user["email"] if user["email"] and user["email_digest"] else None
 
     def deliver(self, address: str, message: Message, link: Optional[str]) -> None:
         lang = message.lang
@@ -87,8 +96,9 @@ class EmailChannel:
 
 class Dispatcher:
     def __init__(self, db_path: str, channels: list, public_url: Optional[str],
-                 clock: Callable[[], datetime]):
+                 clock: Callable[[], datetime], digest_hour: int = 9):
         self.db_path = db_path
+        self.digest_hour = digest_hour
         self.channels = {c.name: c for c in channels}
         self.public_url = public_url.rstrip("/") if public_url else None
         self.clock = clock
@@ -161,6 +171,38 @@ class Dispatcher:
         drop()
         return 1
 
+    def run_digest(self, now: Optional[datetime] = None) -> None:
+        """Раз в день, в час сводки по времени сервера, кладёт утреннюю сводку в очередь."""
+        local = (now or self.clock()).astimezone()
+        if not (self.digest_hour <= local.hour < self.digest_hour + 3):
+            return
+        conn = db.connect(self.db_path)
+        try:
+            today = local.date().isoformat()
+            row = conn.execute("SELECT value FROM settings WHERE key = 'last_digest'").fetchone()
+            if row and row["value"] == today:
+                return
+            stamp = iso(now or self.clock())
+            for user_id, message in build_digest(conn, local.date()):
+                user = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+                for channel in self.channels.values():
+                    if channel.digest_address(user) is None:
+                        continue
+                    conn.execute(
+                        """INSERT INTO outbox (user_id, channel, task_id, task_title, kind, payload, created_at, due_at)
+                           VALUES (?, ?, NULL, ?, 'digest', ?, ?, ?)""",
+                        (user_id, channel.name, message.subject,
+                         json.dumps({"lines": message.lines}, ensure_ascii=False), stamp, stamp),
+                    )
+            conn.execute(
+                "INSERT INTO settings (key, value) VALUES ('last_digest', ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (today,),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
     def start(self) -> None:
         threading.Thread(target=self._run, daemon=True, name="outbox").start()
 
@@ -170,6 +212,7 @@ class Dispatcher:
     def _run(self) -> None:
         while not self.stopping.wait(POLL_SECONDS):
             try:
+                self.run_digest()
                 self.deliver_due()
             except Exception:
                 log.exception("outbox delivery failed")

@@ -4,12 +4,12 @@ import json
 import re
 import sqlite3
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from html import escape, unescape
 from typing import Mapping, Optional, Sequence
 
 from .i18n import points_word, tr
-from .telegram import short_date
+from .telegram import short_date, task_line
 
 
 def watch(conn: sqlite3.Connection, task_id: int, user_id: int) -> None:
@@ -29,7 +29,7 @@ def watcher_ids(conn: sqlite3.Connection, task_id: int) -> list[int]:
 
 # Мелкие правки копятся, чтобы десять отметок в чек-листе пришли одним сообщением.
 GROUP_SECONDS = 120
-IMMEDIATE = frozenset({"comment", "assigned", "moved", "unblocked", "deleted"})
+IMMEDIATE = frozenset({"comment", "assigned", "moved", "unblocked", "deleted", "digest"})
 TAG = re.compile(r"<[^>]+>")
 
 
@@ -106,6 +106,8 @@ def render_row(row: sqlite3.Row, lang: str, user_id: int) -> Optional[str]:
                 + tr("Готово: {task}", lang, task=quoted_title(p["done_title"])))
     if kind == "deleted":
         return tr("🗑 {actor} удаляет задачу {task}", lang, actor=actor, task=task)
+    if kind == "digest":
+        return "\n".join(p["lines"])
     return None
 
 
@@ -184,3 +186,28 @@ def render(rows: Sequence[sqlite3.Row], lang: str, user_id: int) -> Optional[Mes
     if not blocks:
         return None
     return Message(last["task_id"], last["task_title"], "\n\n".join(blocks).split("\n"), lang)
+
+
+def build_digest(conn: sqlite3.Connection, today: date) -> list[tuple[int, Message]]:
+    """Утренняя сводка для каждого, у кого есть задачи на сегодня, на завтра или просроченные."""
+    messages = []
+    for u in conn.execute("SELECT * FROM users").fetchall():
+        lang = u["ui_lang"]
+        rows = conn.execute(
+            """SELECT * FROM tasks WHERE assignee_id = ? AND status != 'done'
+               AND due_date IS NOT NULL AND due_date <= ? ORDER BY due_date, position""",
+            (u["id"], (today + timedelta(days=1)).isoformat()),
+        ).fetchall()
+        if not rows:
+            continue
+        overdue = [t for t in rows if t["due_date"] < today.isoformat()]
+        due_today = [t for t in rows if t["due_date"] == today.isoformat()]
+        tomorrow = [t for t in rows if t["due_date"] > today.isoformat()]
+        parts = [tr("☀️ Доброе утро! Вот что на сегодня.", lang)]
+        for title, group in (("Сегодня", due_today), ("Просрочено", overdue), ("Завтра", tomorrow)):
+            if group:
+                parts.append(f"\n<b>{tr(title, lang)}</b>")
+                parts += [task_line(t, lang) for t in group]
+        lines = "\n".join(parts).split("\n")
+        messages.append((u["id"], Message(None, tr("Задачи на сегодня", lang), lines, lang)))
+    return messages

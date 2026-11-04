@@ -1,4 +1,4 @@
-"""Уведомления в Telegram: очередь отправки, бот для привязки аккаунтов и утренняя сводка."""
+"""Telegram: бот для привязки аккаунтов, ответы на команды и отправка сообщений."""
 
 import json
 import logging
@@ -7,7 +7,7 @@ import sqlite3
 import threading
 import time
 import urllib.request
-from datetime import date, datetime, timedelta
+from datetime import date
 from html import escape
 
 from . import db
@@ -125,39 +125,13 @@ def my_tasks_text(conn: sqlite3.Connection, user_id: int, lang: str) -> str:
     return tr("Ваши задачи:", lang) + "\n".join(parts)
 
 
-def build_digest(conn: sqlite3.Connection, today: date) -> list[tuple[int, str]]:
-    """Утренняя сводка: что нужно сделать сегодня и что просрочено."""
-    messages = []
-    users = conn.execute("SELECT * FROM users WHERE telegram_chat_id IS NOT NULL").fetchall()
-    for u in users:
-        lang = u["ui_lang"]
-        rows = conn.execute(
-            """SELECT * FROM tasks WHERE assignee_id = ? AND status != 'done'
-               AND due_date IS NOT NULL AND due_date <= ? ORDER BY due_date, position""",
-            (u["id"], (today + timedelta(days=1)).isoformat()),
-        ).fetchall()
-        overdue = [t for t in rows if t["due_date"] < today.isoformat()]
-        due_today = [t for t in rows if t["due_date"] == today.isoformat()]
-        tomorrow = [t for t in rows if t["due_date"] > today.isoformat()]
-        if not rows:
-            continue
-        parts = [tr("☀️ Доброе утро! Вот что на сегодня.", lang)]
-        for title, group in (("Сегодня", due_today), ("Просрочено", overdue), ("Завтра", tomorrow)):
-            if group:
-                parts.append(f"\n<b>{tr(title, lang)}</b>")
-                parts += [task_line(t, lang) for t in group]
-        messages.append((u["telegram_chat_id"], "\n".join(parts)))
-    return messages
-
-
 # ---------- работа с сетью ----------
 
 class TelegramBot:
     enabled = True
 
-    def __init__(self, token: str, digest_hour: int = 9, public_url: str | None = None):
+    def __init__(self, token: str, public_url: str | None = None):
         self.base = f"https://api.telegram.org/bot{token}/"
-        self.digest_hour = digest_hour
         self.public_url = public_url.rstrip("/") if public_url else None
         self.bot_username: str | None = None
         self.queue: queue.Queue = queue.Queue()
@@ -186,7 +160,7 @@ class TelegramBot:
 
     def start(self, db_path: str) -> None:
         self.db_path = db_path
-        for target in (self._sender, self._poller, self._scheduler):
+        for target in (self._sender, self._poller):
             threading.Thread(target=target, daemon=True, name=f"tg{target.__name__}").start()
 
     def stop(self) -> None:
@@ -233,29 +207,5 @@ class TelegramBot:
                         self.queue.put((chat_id, text))
             except Exception:
                 log.exception("failed to handle Telegram update")
-            finally:
-                conn.close()
-
-    def _scheduler(self) -> None:
-        while not self.stopping.wait(30):
-            now = datetime.now()
-            if not (self.digest_hour <= now.hour < self.digest_hour + 3):
-                continue
-            conn = db.connect(self.db_path)
-            try:
-                today = now.date().isoformat()
-                row = conn.execute("SELECT value FROM settings WHERE key = 'last_digest'").fetchone()
-                if row and row["value"] == today:
-                    continue
-                for chat_id, text in build_digest(conn, now.date()):
-                    self.send(chat_id, text)
-                conn.execute(
-                    "INSERT INTO settings (key, value) VALUES ('last_digest', ?) "
-                    "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-                    (today,),
-                )
-                conn.commit()
-            except Exception:
-                log.exception("digest failed")
             finally:
                 conn.close()

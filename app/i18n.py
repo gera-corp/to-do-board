@@ -139,6 +139,7 @@ EN = {
     "Отправка почты не настроена": "Email is not configured",
     "Слишком много писем подтверждения. Попробуйте позже.": "Too many confirmation emails. Try again later.",
     "Не удалось отправить письмо. Попробуйте позже.": "Could not send the email. Try again later.",
+    "Задачи на сегодня": "Today's tasks",
 }
 
 MONTHS = {

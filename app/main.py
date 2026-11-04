@@ -558,11 +558,7 @@ def make_notifier():
     token = os.environ.get("TELEGRAM_BOT_TOKEN")
     if not token:
         return NullNotifier()
-    return TelegramBot(
-        token,
-        digest_hour=int(os.environ.get("TELEGRAM_DIGEST_HOUR") or 9),
-        public_url=os.environ.get("TODO_PUBLIC_URL"),
-    )
+    return TelegramBot(token, public_url=os.environ.get("TODO_PUBLIC_URL"))
 
 
 # ---------- приложение ----------
@@ -627,7 +623,9 @@ def create_app(db_path: Optional[str] = None, notifier=None, directory=None,
     channels = [TelegramChannel(notifier)]
     if mailer:
         channels.append(EmailChannel(mailer, site_title, public_url or None))
-    dispatcher = Dispatcher(db_path, channels, public_url or None, clock)
+    # TELEGRAM_DIGEST_HOUR — прежнее имя, пока сводка была только в Telegram.
+    digest_hour = int(os.environ.get("DIGEST_HOUR") or os.environ.get("TELEGRAM_DIGEST_HOUR") or 9)
+    dispatcher = Dispatcher(db_path, channels, public_url or None, clock, digest_hour)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
