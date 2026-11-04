@@ -18,7 +18,7 @@ from pydantic import BaseModel, Field, field_validator
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from . import db, google
-from .notify import record, unwatch, watch, watcher_ids
+from .notify import iso, record, unwatch, watch, watcher_ids
 from .mailer import Mailer, SmtpConfig
 from .outbox import Dispatcher, EmailChannel, TelegramChannel
 from .config import load_env_file
@@ -182,6 +182,16 @@ class SettingsIn(BaseModel):
     site_title: str = Field(max_length=60)
 
 
+class EmailIn(BaseModel):
+    # Одна «@», без пробелов и переводов строки: адрес идёт в заголовок письма.
+    email: str = Field(min_length=3, max_length=254, pattern=r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
+class NotificationsIn(BaseModel):
+    email_notify: Optional[bool] = None
+    email_digest: Optional[bool] = None
+
+
 class TextIn(BaseModel):
     text: str = Field(max_length=2000)
 
@@ -217,6 +227,21 @@ def user_out(row: sqlite3.Row) -> dict:
         "google_email": row["google_email"],
         "auth_source": row["auth_source"],
     }
+
+
+def me_out(row: sqlite3.Row) -> dict:
+    """Свой профиль: в отличие от user_out, с адресом почты — его видит только владелец."""
+    return {
+        **user_out(row),
+        "email": row["email"],
+        "email_pending": row["email_pending"],
+        "email_notify": bool(row["email_notify"]),
+        "email_digest": bool(row["email_digest"]),
+    }
+
+
+def token_hash(token: str) -> str:
+    return hashlib.sha256(token.encode()).hexdigest()
 
 
 def item_out(row: sqlite3.Row) -> dict:
@@ -853,13 +878,13 @@ def create_app(db_path: Optional[str] = None, notifier=None, directory=None,
 
     @app.get("/api/me")
     def me(user: sqlite3.Row = Depends(current_user)):
-        return user_out(user)
+        return me_out(user)
 
     @app.get("/api/config")
     def config(ctx: Ctx = Depends(get_ctx)):
         return {"telegram": notifier.enabled, "bot_username": notifier.bot_username,
                 "site_title": get_setting(ctx.conn, "site_title"),
-                "version": os.environ.get("APP_VERSION") or "dev"}
+                "version": os.environ.get("APP_VERSION") or "dev", "email": mailer is not None}
 
     # --- Telegram ---
 
@@ -877,6 +902,71 @@ def create_app(db_path: Optional[str] = None, notifier=None, directory=None,
             "UPDATE users SET telegram_chat_id = NULL, telegram_link_code = NULL WHERE id = ?",
             (ctx.user["id"],),
         )
+
+    # --- почта ---
+
+    # Не чаще одного письма подтверждения в минуту и пяти в сутки: доска не должна
+    # становиться рассылкой на чужие адреса.
+    email_rate = ((timedelta(minutes=1), 1), (timedelta(days=1), 5))
+
+    @app.put("/api/me/email", status_code=202)
+    def request_email(data: EmailIn, request: Request, ctx: Ctx = Depends(get_ctx)):
+        if mailer is None:
+            raise HTTPException(400, "Отправка почты не настроена")
+        conn, user, now = ctx.conn, ctx.user, clock()
+        for window, limit in email_rate:
+            count = conn.execute("SELECT COUNT(*) FROM email_confirm_log WHERE user_id = ? AND sent_at > ?",
+                                 (user["id"], iso(now - window))).fetchone()[0]
+            if count >= limit:
+                raise HTTPException(429, "Слишком много писем подтверждения. Попробуйте позже.")
+        address = data.email
+        token = new_token()
+        conn.execute(
+            "UPDATE users SET email_pending = ?, email_token_hash = ?, email_token_expires = ? WHERE id = ?",
+            (address, token_hash(token), iso(now + timedelta(hours=24)), user["id"]),
+        )
+        conn.execute("INSERT INTO email_confirm_log (user_id, sent_at) VALUES (?, ?)", (user["id"], iso(now)))
+        link = f"{public_url or str(request.base_url).rstrip('/')}/api/email/confirm?token={token}"
+        lang = user["ui_lang"]
+        title = get_setting(conn, "site_title") or tr("Доска задач", lang)
+        try:
+            mailer.send(address, f"[{title}] {tr('Подтвердите адрес почты', lang)}",
+                        tr("Чтобы получать уведомления доски на этот адрес, откройте ссылку:\n{link}\n\n"
+                           "Ссылка действует 24 часа. Если вы ничего не запрашивали, просто удалите письмо.",
+                           lang, link=link))
+        except Exception as exc:  # почтовый сервер недоступен или отказал
+            log.warning("Письмо подтверждения не отправлено: %s", exc)
+            raise HTTPException(502, "Не удалось отправить письмо. Попробуйте позже.")
+        return {"email_pending": address}
+
+    @app.get("/api/email/confirm", include_in_schema=False)
+    def confirm_email(token: str = "", conn: sqlite3.Connection = Conn):
+        # Вход не нужен: ссылку из письма часто открывают на другом устройстве.
+        row = conn.execute("SELECT * FROM users WHERE email_token_hash = ?", (token_hash(token),)).fetchone()
+        if not token or row is None or row["email_token_expires"] < iso(clock()):
+            return RedirectResponse("/?email=invalid", status_code=303)
+        conn.execute(
+            """UPDATE users SET email = email_pending, email_pending = NULL, email_token_hash = NULL,
+                                email_token_expires = NULL, email_notify = 1 WHERE id = ?""",
+            (row["id"],),
+        )
+        return RedirectResponse("/?email=confirmed", status_code=303)
+
+    @app.delete("/api/me/email", status_code=204)
+    def delete_email(ctx: Ctx = Depends(get_ctx)):
+        ctx.conn.execute(
+            """UPDATE users SET email = NULL, email_pending = NULL, email_token_hash = NULL,
+                                email_token_expires = NULL WHERE id = ?""",
+            (ctx.user["id"],),
+        )
+
+    @app.patch("/api/me/notifications")
+    def update_notifications(data: NotificationsIn, ctx: Ctx = Depends(get_ctx)):
+        changes = {k: int(v) for k, v in data.model_dump(exclude_none=True).items()}
+        if changes:
+            cols = ", ".join(f"{k} = ?" for k in changes)
+            ctx.conn.execute(f"UPDATE users SET {cols} WHERE id = ?", (*changes.values(), ctx.user["id"]))
+        return me_out(ctx.conn.execute("SELECT * FROM users WHERE id = ?", (ctx.user["id"],)).fetchone())
 
     # --- пользователи ---
 

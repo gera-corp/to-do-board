@@ -131,6 +131,14 @@ EN = {
     "Открыть задачу": "Open task",
     "Перестать наблюдать": "Stop watching",
     "Настройки уведомлений": "Notification settings",
+    "Подтвердите адрес почты": "Confirm your email address",
+    "Чтобы получать уведомления доски на этот адрес, откройте ссылку:\n{link}\n\n"
+    "Ссылка действует 24 часа. Если вы ничего не запрашивали, просто удалите письмо.":
+        "To get board notifications at this address, open the link:\n{link}\n\n"
+        "The link is valid for 24 hours. If you did not ask for this, just delete the email.",
+    "Отправка почты не настроена": "Email is not configured",
+    "Слишком много писем подтверждения. Попробуйте позже.": "Too many confirmation emails. Try again later.",
+    "Не удалось отправить письмо. Попробуйте позже.": "Could not send the email. Try again later.",
 }
 
 MONTHS = {
