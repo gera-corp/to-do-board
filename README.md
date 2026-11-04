@@ -24,7 +24,7 @@ This downloads the published image and runs it with the same restrictions as in 
 
 | Command | What it runs |
 |---|---|
-| `docker compose up -d` | the published image, `latest` by default |
+| `docker compose up -d` | the published image, the latest release by default |
 | `TAG=0.7.2 docker compose up -d` | a specific published version |
 | `docker compose up -d --build` | your local code, built from the source |
 | `docker compose pull && docker compose up -d` | the newest published image |
@@ -287,8 +287,8 @@ GitHub Actions builds the image on every push to `main` and on `v*.*.*` tags and
 
 | Tag | Published on |
 |---|---|
-| `latest`, `sha-<commit>` | push to `main` |
-| `1.2.3`, `1.2` | tag `v1.2.3` |
+| `sha-<commit>` | push to `main` |
+| `1.2.3`, `1.2`, `latest` | tag `v1.2.3` (`latest` is not moved by pre-release tags such as `v1.2.3-rc.1`) |
 
 How the image is hardened:
 - distroless base (`gcr.io/distroless/python3-debian13:nonroot`): no shell, package manager or extra tools;

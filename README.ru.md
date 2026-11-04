@@ -24,7 +24,7 @@ docker compose up -d
 
 | Команда | Что запускает |
 |---|---|
-| `docker compose up -d` | готовый образ, по умолчанию `latest` |
+| `docker compose up -d` | готовый образ, по умолчанию последний релиз (`latest`) |
 | `TAG=0.7.2 docker compose up -d` | конкретную опубликованную версию |
 | `docker compose up -d --build` | ваш локальный код, собранный из исходников |
 | `docker compose pull && docker compose up -d` | самый свежий готовый образ |
@@ -287,8 +287,8 @@ compose.yaml     запуск через Docker Compose
 
 | Тег | Когда появляется |
 |---|---|
-| `latest`, `sha-<коммит>` | push в `main` |
-| `1.2.3`, `1.2` | тег `v1.2.3` |
+| `sha-<коммит>` | push в `main` |
+| `1.2.3`, `1.2`, `latest` | тег `v1.2.3` (предрелизы вроде `v1.2.3-rc.1` `latest` не двигают) |
 
 Чем образ защищён:
 - база — distroless (`gcr.io/distroless/python3-debian13:nonroot`): нет shell, пакетного менеджера и лишних утилит;
