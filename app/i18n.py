@@ -127,6 +127,10 @@ EN = {
     "{actor}: убрана связь — {phrase} {other}": "{actor}: link removed — {phrase} {other}",
     "{actor}: новая подзадача {title}": "{actor}: new subtask {title}",
     "{actor}: подзадача убрана {title}": "{actor}: subtask removed {title}",
+    "Доска задач": "Task Board",
+    "Открыть задачу": "Open task",
+    "Перестать наблюдать": "Stop watching",
+    "Настройки уведомлений": "Notification settings",
 }
 
 MONTHS = {

@@ -19,7 +19,8 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from . import db, google
 from .notify import record, unwatch, watch, watcher_ids
-from .outbox import Dispatcher, TelegramChannel
+from .mailer import Mailer, SmtpConfig
+from .outbox import Dispatcher, EmailChannel, TelegramChannel
 from .config import load_env_file
 from .ldap_auth import LdapUnavailable, LdapUser, make_directory
 from .i18n import normalize_lang, tr
@@ -565,7 +566,7 @@ def ldap_local_user(conn: sqlite3.Connection, info: LdapUser, link_existing: boo
 
 
 def create_app(db_path: Optional[str] = None, notifier=None, directory=None,
-               clock: Optional[Callable[[], datetime]] = None) -> FastAPI:
+               clock: Optional[Callable[[], datetime]] = None, mailer=None) -> FastAPI:
     load_env_file()
     db_path = db_path or os.environ.get("TODO_DB") or str(Path("data") / "tasks.db")
     notifier = notifier or make_notifier()
@@ -588,7 +589,19 @@ def create_app(db_path: Optional[str] = None, notifier=None, directory=None,
     ip_limiter = LoginLimiter(max_failures=30)
 
     clock = clock or (lambda: datetime.now(timezone.utc))
+    smtp = SmtpConfig.from_env()
+    mailer = mailer or (Mailer(smtp) if smtp else None)
+
+    def site_title() -> str:
+        conn = db.connect(db_path)
+        try:
+            return get_setting(conn, "site_title")
+        finally:
+            conn.close()
+
     channels = [TelegramChannel(notifier)]
+    if mailer:
+        channels.append(EmailChannel(mailer, site_title, public_url or None))
     dispatcher = Dispatcher(db_path, channels, public_url or None, clock)
 
     @asynccontextmanager

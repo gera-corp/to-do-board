@@ -4,9 +4,11 @@ import logging
 import sqlite3
 import threading
 from datetime import datetime, timedelta, timezone
+from html import escape
 from typing import Callable, Optional, Protocol
 
 from . import db
+from .i18n import tr
 from .notify import Message, iso, render
 
 log = logging.getLogger("outbox")
@@ -47,6 +49,40 @@ class TelegramChannel:
         if link:
             text += f"\n\n{link}"
         self.notifier.send_now(int(address), text)
+
+
+class EmailChannel:
+    name = "email"
+
+    def __init__(self, mailer, site_title: Callable[[], str], public_url: Optional[str]):
+        self.mailer = mailer
+        self.site_title = site_title
+        self.public_url = public_url.rstrip("/") if public_url else None
+
+    def address(self, user: sqlite3.Row) -> Optional[str]:
+        return user["email"] if user["email"] and user["email_notify"] else None
+
+    def deliver(self, address: str, message: Message, link: Optional[str]) -> None:
+        lang = message.lang
+        title = self.site_title() or tr("Доска задач", lang)
+        subject = " ".join(f"[{title}] {message.subject}".split())
+        text = "\n".join(message.text_lines)
+        body = "<br>\n".join(message.lines)
+        links = []
+        if link:
+            text += f"\n\n{tr('Открыть задачу', lang)}: {link}"
+            body += (f'<p style="margin:24px 0"><a href="{escape(link)}" style="background:#2F5BD3;color:#fff;'
+                     f'padding:10px 18px;border-radius:6px;text-decoration:none">{tr("Открыть задачу", lang)}</a></p>')
+            links.append(f'<a href="{escape(link)}">{tr("Перестать наблюдать", lang)}</a>')
+        if self.public_url:
+            profile = f"{self.public_url}/#profile"
+            text += f"\n{tr('Настройки уведомлений', lang)}: {profile}"
+            links.append(f'<a href="{escape(profile)}">{tr("Настройки уведомлений", lang)}</a>')
+        if links:
+            body += f'<p style="color:#666;font-size:12px">{" · ".join(links)}</p>'
+        html = f'<div style="font-family:sans-serif;font-size:15px;line-height:1.5">{body}</div>'
+        thread = f"task-{message.task_id}" if message.task_id else None
+        self.mailer.send(address, subject, text, html, thread)
 
 
 class Dispatcher:

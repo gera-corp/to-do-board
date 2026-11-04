@@ -42,6 +42,7 @@ class Message:
     task_id: Optional[int]
     subject: str
     lines: list[str]  # HTML-разметка Telegram, всё содержимое экранировано
+    lang: str = "en"
 
     @property
     def text_lines(self) -> list[str]:
@@ -182,4 +183,4 @@ def render(rows: Sequence[sqlite3.Row], lang: str, user_id: int) -> Optional[Mes
         blocks.insert(0, "\n".join([header, *edits]))
     if not blocks:
         return None
-    return Message(last["task_id"], last["task_title"], "\n\n".join(blocks).split("\n"))
+    return Message(last["task_id"], last["task_title"], "\n\n".join(blocks).split("\n"), lang)
