@@ -161,6 +161,49 @@ MIGRATIONS = [
     """
     ALTER TABLE users ADD COLUMN auth_source TEXT NOT NULL DEFAULT 'local';
     """,
+    # 9: наблюдатели задач, очередь уведомлений и почта.
+    # Наблюдают уже сейчас автор, исполнитель и все, кто комментировал (как в Jira).
+    # В outbox нет внешнего ключа на задачу: сообщение об удалении переживает саму задачу.
+    """
+    CREATE TABLE task_watchers (
+        task_id INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        PRIMARY KEY (task_id, user_id)
+    );
+    INSERT OR IGNORE INTO task_watchers (task_id, user_id)
+        SELECT t.id, u.id FROM tasks t JOIN users u ON u.id IN (t.creator_id, t.assignee_id)
+        UNION
+        SELECT e.task_id, e.user_id FROM task_events e
+            JOIN tasks t ON t.id = e.task_id JOIN users u ON u.id = e.user_id
+            WHERE e.kind = 'comment';
+
+    CREATE TABLE outbox (
+        id INTEGER PRIMARY KEY,
+        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        channel TEXT NOT NULL,
+        task_id INTEGER,
+        task_title TEXT NOT NULL DEFAULT '',
+        actor_name TEXT NOT NULL DEFAULT '',
+        kind TEXT NOT NULL,
+        payload TEXT NOT NULL DEFAULT '{}',
+        created_at TEXT NOT NULL,
+        due_at TEXT NOT NULL,
+        attempts INTEGER NOT NULL DEFAULT 0,
+        next_try_at TEXT
+    );
+    CREATE INDEX idx_outbox_due ON outbox(due_at);
+
+    ALTER TABLE users ADD COLUMN email TEXT;
+    ALTER TABLE users ADD COLUMN email_pending TEXT;
+    ALTER TABLE users ADD COLUMN email_token_hash TEXT;
+    ALTER TABLE users ADD COLUMN email_token_expires TEXT;
+    ALTER TABLE users ADD COLUMN email_notify INTEGER NOT NULL DEFAULT 1;
+    ALTER TABLE users ADD COLUMN email_digest INTEGER NOT NULL DEFAULT 0;
+    CREATE TABLE email_confirm_log (
+        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        sent_at TEXT NOT NULL
+    );
+    """,
 ]
 
 

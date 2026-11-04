@@ -19,6 +19,7 @@ from pydantic import BaseModel, Field, field_validator
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from . import db, google
+from .notify import unwatch, watch, watcher_ids
 from .config import load_env_file
 from .ldap_auth import LdapUnavailable, LdapUser, make_directory
 from .i18n import normalize_lang, points_word, tr
@@ -241,6 +242,12 @@ def tasks_out(conn: sqlite3.Connection, rows: list[sqlite3.Row]) -> list[dict]:
     ).fetchall()
     for i in items:
         by_id[i["task_id"]]["checklist"].append(item_out(i))
+    for t in tasks:
+        t["watchers"] = []
+    for w in conn.execute(
+        f"SELECT task_id, user_id FROM task_watchers WHERE task_id IN ({marks}) ORDER BY user_id", tuple(by_id)
+    ):
+        by_id[w["task_id"]]["watchers"].append(w["user_id"])
     for t in tasks:
         t["links"] = []
     links = conn.execute(
@@ -531,6 +538,8 @@ def spawn_next(ctx: Ctx, task: sqlite3.Row) -> None:
         "SELECT text FROM checklist_items WHERE task_id = ? ORDER BY position, id", (task["id"],)
     ).fetchall()
     add_checklist(conn, cur.lastrowid, [i["text"] for i in items])
+    for user_id in watcher_ids(conn, task["id"]):
+        watch(conn, cur.lastrowid, user_id)
     ctx.log(cur.lastrowid, "created", recurring_from=task["id"])
 
 
@@ -994,6 +1003,9 @@ def create_app(db_path: Optional[str] = None, notifier=None, directory=None) -> 
         task_id = cur.lastrowid
         add_checklist(conn, task_id, data.checklist)
         ctx.log(task_id, "created")
+        watch(conn, task_id, ctx.user["id"])
+        if data.assignee_id:
+            watch(conn, task_id, data.assignee_id)
         task = get_task_row(conn, task_id)
         if task["assignee_id"]:
             notify_assigned(ctx, task)
@@ -1028,6 +1040,7 @@ def create_app(db_path: Optional[str] = None, notifier=None, directory=None) -> 
         if "assignee_id" in changes:
             ctx.log(task_id, "assigned", **{"from": task["assignee_id"], "to": changes["assignee_id"]})
             if changes["assignee_id"]:
+                watch(conn, task_id, changes["assignee_id"])
                 notify_assigned(ctx, get_task_row(conn, task_id))
         edited = [k for k in EDITABLE_FIELDS if k in changes]
         if edited:
@@ -1053,6 +1066,19 @@ def create_app(db_path: Optional[str] = None, notifier=None, directory=None) -> 
     def delete_task(task_id: int, ctx: Ctx = Depends(get_ctx)):
         if ctx.conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,)).rowcount == 0:
             raise HTTPException(404, "Задача не найдена")
+
+    # Глазик: каждый включает и выключает наблюдение только за себя.
+    @app.post("/api/tasks/{task_id}/watch")
+    def watch_task(task_id: int, ctx: Ctx = Depends(get_ctx)):
+        get_task_row(ctx.conn, task_id)
+        watch(ctx.conn, task_id, ctx.user["id"])
+        return task_full(ctx.conn, task_id)
+
+    @app.delete("/api/tasks/{task_id}/watch")
+    def unwatch_task(task_id: int, ctx: Ctx = Depends(get_ctx)):
+        get_task_row(ctx.conn, task_id)
+        unwatch(ctx.conn, task_id, ctx.user["id"])
+        return task_full(ctx.conn, task_id)
 
     # --- доски и колонки (меняет только администратор) ---
 
@@ -1270,6 +1296,7 @@ def create_app(db_path: Optional[str] = None, notifier=None, directory=None) -> 
     def add_comment(task_id: int, data: TextIn, ctx: Ctx = Depends(get_ctx)):
         task = get_task_row(ctx.conn, task_id)
         event_id = ctx.log(task_id, "comment", text=data.text)
+        watch(ctx.conn, task_id, ctx.user["id"])
         ctx.notify(
             [task["assignee_id"], task["creator_id"]],
             lambda lang: tr("💬 {actor} о задаче {task}:", lang, actor=ctx.actor, task=quoted(task))
