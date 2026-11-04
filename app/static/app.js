@@ -274,6 +274,7 @@ function renderAll() {
   if ($("#people-dialog").open) {
     renderPeopleList();
     renderTelegramBox();
+    renderEmailBox();
   }
 }
 
@@ -294,7 +295,55 @@ async function start() {
   applySiteTitle(state.config.site_title);
   renderVersion();
   await loadAll();
+  showEmailResult();
+  await openFromHash();
 }
+
+const EMAIL_RESULTS = {
+  confirmed: "Адрес почты подтверждён.",
+  invalid: "Ссылка подтверждения устарела или уже использована.",
+};
+
+function showEmailResult() {
+  const result = new URLSearchParams(location.search).get("email");
+  if (!result) return;
+  if (EMAIL_RESULTS[result]) toast(t(EMAIL_RESULTS[result]));
+  history.replaceState(null, "", "/" + location.hash);
+}
+
+// Ссылки из писем и Telegram: #task=ID открывает задачу, #profile — профиль.
+async function openFromHash() {
+  const hash = location.hash;
+  if (!hash) return;
+  history.replaceState(null, "", location.pathname + location.search);
+  document.querySelectorAll("dialog[open]").forEach((d) => d.close());
+  if (hash === "#profile") {
+    $("#open-people").click();
+    return;
+  }
+  const id = Number((hash.match(/^#task=(\d+)$/) || [])[1]);
+  if (!id) return;
+  let task = state.tasks.find((x) => x.id === id);
+  if (!task) {
+    try {
+      task = await api("GET", `/api/tasks/${id}`);
+    } catch {
+      toast(t("Задача не найдена"));
+      return;
+    }
+    if (task.board_id !== state.boardId) {
+      state.boardId = task.board_id;
+      try { localStorage.setItem("board", String(task.board_id)); } catch {}
+      await loadAll();
+      task = state.tasks.find((x) => x.id === id) || task;
+    }
+  }
+  openTask(task);
+}
+
+window.addEventListener("hashchange", () => {
+  if (state.me) openFromHash().catch(() => {});
+});
 
 setInterval(() => {
   if (state.me && !document.hidden && !state.dragId && !document.querySelector("dialog[open]")) loadAll().catch(() => {});
@@ -624,6 +673,7 @@ function openTask(task, columnId = null, parentId = null) {
   fillParentSelect(task, values.parent_id ?? null);
   $("#subtask-input").value = "";
   renderRelations();
+  renderWatch();
 
   state.draftChecklist = [];
   $("#checklist-input").value = "";
@@ -636,6 +686,34 @@ function openTask(task, columnId = null, parentId = null) {
   taskDialog.showModal();
   if (!task) taskForm.title.focus();
 }
+
+// Глазик: наблюдатели получают уведомления обо всём, что происходит с задачей.
+function renderWatch() {
+  const task = state.editingTask;
+  const btn = $("#watch-btn");
+  btn.hidden = !task;
+  if (!task) return;
+  const watching = task.watchers.includes(state.me.id);
+  const names = task.watchers.map((id) => userById(id)?.display_name).filter(Boolean);
+  btn.setAttribute("aria-pressed", String(watching));
+  btn.setAttribute("aria-label", watching ? t("Перестать наблюдать") : t("Наблюдать за задачей"));
+  btn.title = names.length ? t("Наблюдают: {names}", { names: names.join(", ") }) : t("Никто не наблюдает");
+  btn.replaceChildren(h("span", { "aria-hidden": "true" }, "👁"), h("span", { class: "watch-count" }, String(names.length)));
+}
+
+$("#watch-btn").addEventListener("click", async () => {
+  const task = state.editingTask;
+  if (!task) return;
+  try {
+    const watching = task.watchers.includes(state.me.id);
+    const fresh = await api(watching ? "DELETE" : "POST", `/api/tasks/${task.id}/watch`);
+    state.editingTask = { ...task, watchers: fresh.watchers };
+    state.tasks = state.tasks.map((x) => (x.id === task.id ? { ...x, watchers: fresh.watchers } : x));
+    renderWatch();
+  } catch (err) {
+    toast(err.message);
+  }
+});
 
 // Очки могли выставить через API нестандартным числом — показываем его, а не теряем.
 function ensurePointsOption(points) {
@@ -1352,6 +1430,66 @@ function renderTelegramBox() {
   }
 }
 
+function renderEmailBox() {
+  const box = $("#email-box");
+  box.hidden = !state.config.email;
+  if (box.hidden) return;
+  const me = state.me;
+  const status = me.email
+    ? t("Уведомления приходят на {email}.", { email: me.email })
+    : t("Получайте уведомления на почту — укажите свой адрес.");
+  const input = h("input", {
+    type: "email", name: "email", required: true, maxlength: 254, autocomplete: "email",
+    placeholder: "name@example.org", "aria-label": t("Адрес почты"),
+  });
+  const form = h("form", { class: "email-form", onsubmit: requestEmail }, input,
+    h("button", { class: "btn primary" }, t("Подтвердить")));
+  const parts = [h("p", {}, status)];
+  if (me.email_pending) parts.push(h("p", { class: "muted small" }, t("Ждёт подтверждения: {email}", { email: me.email_pending })));
+  parts.push(form);
+  if (me.email) {
+    parts.push(
+      h("label", { class: "check" },
+        h("input", { type: "checkbox", checked: me.email_notify, onchange: (e) => saveNotifications({ email_notify: e.target.checked }) }),
+        t("Уведомления на почту")),
+      h("label", { class: "check" },
+        h("input", { type: "checkbox", checked: me.email_digest, onchange: (e) => saveNotifications({ email_digest: e.target.checked }) }),
+        t("Утренняя сводка на почту")),
+      h("button", { type: "button", class: "btn ghost", onclick: deleteEmail }, t("Удалить адрес")),
+    );
+  }
+  box.replaceChildren(h("h3", {}, t("Почта")), ...parts);
+}
+
+async function requestEmail(e) {
+  e.preventDefault();
+  const email = e.target.email.value.trim();
+  try {
+    await api("PUT", "/api/me/email", { email });
+    toast(t("Письмо отправлено на {email}. Откройте ссылку из письма, чтобы подтвердить адрес.", { email }));
+    state.me = await api("GET", "/api/me");
+    renderEmailBox();
+  } catch (err) {
+    toast(err.message);
+  }
+}
+
+async function saveNotifications(changes) {
+  try {
+    state.me = await api("PATCH", "/api/me/notifications", changes);
+  } catch (err) {
+    toast(err.message);
+  }
+  renderEmailBox();
+}
+
+async function deleteEmail() {
+  if (!confirm(t("Удалить адрес почты? Уведомления на почту перестанут приходить."))) return;
+  await api("DELETE", "/api/me/email");
+  state.me = await api("GET", "/api/me");
+  renderEmailBox();
+}
+
 async function linkTelegram() {
   try {
     const { url } = await api("POST", "/api/me/telegram");
@@ -1486,6 +1624,7 @@ $("#user-cancel").addEventListener("click", resetUserForm);
 $("#open-people").addEventListener("click", () => {
   renderPeopleList();
   renderTelegramBox();
+  renderEmailBox();
   resetUserForm();
   peopleDialog.showModal();
 });

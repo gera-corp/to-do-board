@@ -254,6 +254,26 @@ const EN = /*EN-BEGIN*/{
   "В открывшемся чате нажмите «Start». Когда вернётесь сюда, статус обновится.":
     "Press Start in the chat that opened. The status updates when you come back here.",
   "Открыть бота ещё раз": "Open the bot again",
+  "Перестать наблюдать": "Stop watching",
+  "Наблюдать за задачей": "Watch this task",
+  "Наблюдают: {names}": "Watching: {names}",
+  "Никто не наблюдает": "Nobody is watching",
+  "Адрес почты подтверждён.": "Email address confirmed.",
+  "Ссылка подтверждения устарела или уже использована.": "The confirmation link has expired or was already used.",
+  "Задача не найдена": "Task not found",
+  "Уведомления приходят на {email}.": "Notifications go to {email}.",
+  "Получайте уведомления на почту — укажите свой адрес.": "Get notifications by email: enter your address.",
+  "Адрес почты": "Email address",
+  "Подтвердить": "Confirm",
+  "Ждёт подтверждения: {email}": "Waiting for confirmation: {email}",
+  "Уведомления на почту": "Email notifications",
+  "Утренняя сводка на почту": "Morning digest by email",
+  "Удалить адрес": "Remove address",
+  "Почта": "Email",
+  "Письмо отправлено на {email}. Откройте ссылку из письма, чтобы подтвердить адрес.":
+    "We sent an email to {email}. Open the link in it to confirm the address.",
+  "Удалить адрес почты? Уведомления на почту перестанут приходить.":
+    "Remove the email address? Email notifications will stop.",
 }/*EN-END*/;
 
 function t(text, params = {}) {

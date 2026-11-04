@@ -83,6 +83,7 @@
       <form id="task-form" method="dialog" class="sheet">
         <div class="sheet-head">
           <h2 id="task-dialog-title">Новая задача</h2>
+          <button type="button" id="watch-btn" class="watch" aria-pressed="false" hidden></button>
           <button type="button" class="icon-btn" data-close aria-label="Закрыть">×</button>
         </div>
         <label>Что сделать <input name="title" required maxlength="200" autocomplete="off"></label>
@@ -259,6 +260,7 @@
         <button type="button" class="icon-btn" data-close aria-label="Закрыть">×</button>
       </div>
       <section class="telegram" id="telegram-box" hidden></section>
+      <section class="telegram email" id="email-box" hidden></section>
       <ul class="people-list" id="people-list"></ul>
       <form id="user-form" class="user-form">
         <h3 id="user-form-title">Добавить человека</h3>

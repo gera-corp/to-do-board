@@ -527,6 +527,20 @@ dialog.wide .task-layout { grid-template-columns: minmax(0, 1.35fr) minmax(0, 1f
 }
 .telegram p { margin: 0; flex: 1; min-width: 200px; }
 .telegram .btn { text-decoration: none; }
+.email { flex-direction: column; align-items: stretch; margin-top: 10px; }
+.email h3 { margin: 0; font-size: 1rem; }
+.email-form { display: flex; gap: 8px; flex-wrap: wrap; }
+.email-form input { flex: 1; min-width: 180px; }
+.email .check { align-self: flex-start; padding-bottom: 0; }
+.email > .btn { align-self: flex-start; }
+
+.watch {
+  display: inline-flex; align-items: center; gap: 4px; margin-left: auto;
+  border: 1px solid var(--line, currentColor); border-radius: 999px; padding: 2px 10px;
+  background: transparent; color: inherit; font: inherit; cursor: pointer; opacity: .6;
+}
+.watch[aria-pressed="true"] { opacity: 1; background: var(--well); }
+.watch-count { font-size: .85em; }
 
 .toast {
   position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); z-index: 10;
