@@ -60,3 +60,22 @@ def test_digest_hour_env_fallback(db_path, notifier, clock, monkeypatch):
     assert create_app(db_path, notifier=notifier, clock=clock).state.dispatcher.digest_hour == 7
     monkeypatch.setenv("DIGEST_HOUR", "6")
     assert create_app(db_path, notifier=notifier, clock=clock).state.dispatcher.digest_hour == 6
+
+
+def test_email_digest_sent_when_notifications_off(db_path, notifier, clock, monkeypatch):
+    app, mail = digest_app(db_path, notifier, clock, monkeypatch)
+    conn = db.connect(db_path)
+    conn.execute("UPDATE users SET email_notify = 0")
+    conn.commit()
+    conn.close()
+    app.state.dispatcher.run_digest()
+    deliver(app)
+    assert len(mail.sent) == 1
+
+
+def test_telegram_digest_links_to_board(db_path, notifier, clock, monkeypatch):
+    monkeypatch.setenv("TODO_PUBLIC_URL", "https://b.example")
+    app, _ = digest_app(db_path, notifier, clock, monkeypatch)
+    app.state.dispatcher.run_digest()
+    deliver(app)
+    assert notifier.sent[-1][1].endswith("\n\nhttps://b.example")

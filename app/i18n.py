@@ -140,6 +140,8 @@ EN = {
     "Слишком много писем подтверждения. Попробуйте позже.": "Too many confirmation emails. Try again later.",
     "Не удалось отправить письмо. Попробуйте позже.": "Could not send the email. Try again later.",
     "Задачи на сегодня": "Today's tasks",
+    "Ссылка подтверждения устарела или уже использована.": "The confirmation link has expired or was already used.",
+    "Открыть доску": "Open the board",
 }
 
 MONTHS = {

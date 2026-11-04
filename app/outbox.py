@@ -16,6 +16,7 @@ from .notify import Message, build_digest, iso, render
 log = logging.getLogger("outbox")
 
 POLL_SECONDS = 5
+TELEGRAM_LIMIT = 4096
 GIVE_UP = timedelta(hours=24)
 
 
@@ -50,10 +51,15 @@ class TelegramChannel:
         return self.address(user)
 
     def deliver(self, address: str, message: Message, link: Optional[str]) -> None:
-        text = "\n".join(message.lines)
-        if link:
-            text += f"\n\n{link}"
-        self.notifier.send_now(int(address), text)
+        tail = f"\n\n{link}" if link else ""
+        lines = list(message.lines)
+        # Telegram не принимает сообщения длиннее 4096 символов. Режем по строкам, чтобы не
+        # разорвать HTML-тег посередине.
+        if len("\n".join(lines)) + len(tail) > TELEGRAM_LIMIT:
+            while lines and len("\n".join(lines)) + len(tail) + 2 > TELEGRAM_LIMIT:
+                lines.pop()
+            lines.append("…")
+        self.notifier.send_now(int(address), "\n".join(lines) + tail)
 
 
 class EmailChannel:
@@ -79,10 +85,12 @@ class EmailChannel:
         body = "<br>\n".join(message.lines)
         links = []
         if link:
-            text += f"\n\n{tr('Открыть задачу', lang)}: {link}"
+            button = tr("Открыть задачу" if message.task_id else "Открыть доску", lang)
+            text += f"\n\n{button}: {link}"
             body += (f'<p style="margin:24px 0"><a href="{escape(link)}" style="background:#2F5BD3;color:#fff;'
-                     f'padding:10px 18px;border-radius:6px;text-decoration:none">{tr("Открыть задачу", lang)}</a></p>')
-            links.append(f'<a href="{escape(link)}">{tr("Перестать наблюдать", lang)}</a>')
+                     f'padding:10px 18px;border-radius:6px;text-decoration:none">{button}</a></p>')
+            if message.task_id:
+                links.append(f'<a href="{escape(link)}">{tr("Перестать наблюдать", lang)}</a>')
         if self.public_url:
             profile = f"{self.public_url}/#profile"
             text += f"\n{tr('Настройки уведомлений', lang)}: {profile}"
@@ -106,9 +114,10 @@ class Dispatcher:
 
     def link(self, rows: list[sqlite3.Row]) -> Optional[str]:
         task_id = rows[-1]["task_id"]
-        if not self.public_url or task_id is None or any(r["kind"] == "deleted" for r in rows):
+        if not self.public_url or any(r["kind"] == "deleted" for r in rows):
             return None
-        return f"{self.public_url}/#task={task_id}"
+        # Сводка не про одну задачу — ведёт на доску.
+        return f"{self.public_url}/#task={task_id}" if task_id is not None else self.public_url
 
     def deliver_due(self, now: Optional[datetime] = None) -> int:
         """Отправляет созревшие группы. Возвращает число отправленных сообщений."""
@@ -117,21 +126,33 @@ class Dispatcher:
         sent = 0
         conn = db.connect(self.db_path)
         try:
+            # Группа в паузе после неудачи ждёт целиком, даже если в неё добавились новые строки.
             groups = conn.execute(
                 """SELECT user_id, channel, task_id FROM outbox
-                   WHERE next_try_at IS NULL OR next_try_at <= ?
-                   GROUP BY user_id, channel, task_id HAVING MIN(due_at) <= ? ORDER BY MIN(id)""",
+                   GROUP BY user_id, channel, task_id
+                   HAVING MIN(due_at) <= ? AND SUM(CASE WHEN next_try_at > ? THEN 1 ELSE 0 END) = 0
+                   ORDER BY MIN(id)""",
                 (stamp, stamp),
             ).fetchall()
+            failed: set[str] = set()
             for g in groups:
-                sent += self._deliver_group(conn, g["user_id"], g["channel"], g["task_id"], now)
+                # Недоступный почтовый сервер не должен задерживать Telegram: после первой
+                # неудачи канал в этом проходе больше не пробуем.
+                if g["channel"] in failed:
+                    continue
+                result = self._deliver_group(conn, g["user_id"], g["channel"], g["task_id"], now)
                 conn.commit()
+                if result is None:
+                    failed.add(g["channel"])
+                else:
+                    sent += result
         finally:
             conn.close()
         return sent
 
     def _deliver_group(self, conn: sqlite3.Connection, user_id: int, channel_name: str,
-                       task_id: Optional[int], now: datetime) -> int:
+                       task_id: Optional[int], now: datetime) -> Optional[int]:
+        """1 — отправлено, 0 — снято без отправки, None — канал не ответил, повторим позже."""
         rows = conn.execute(
             """SELECT * FROM outbox WHERE user_id = ? AND channel = ? AND task_id IS ? AND created_at <= ?
                ORDER BY id""",
@@ -147,9 +168,17 @@ class Dispatcher:
 
         user = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
         channel = self.channels.get(channel_name)
-        # Человек мог за это время отключить канал или удалить адрес.
-        address = channel.address(user) if channel and user else None
-        message = render(rows, user["ui_lang"], user_id) if address else None
+        # Человек мог за это время отключить канал или удалить адрес. У сводки своя настройка.
+        digest = all(r["kind"] == "digest" for r in rows)
+        address = None
+        if channel and user:
+            address = channel.digest_address(user) if digest else channel.address(user)
+        try:
+            message = render(rows, user["ui_lang"], user_id) if address else None
+        except Exception:
+            # Одна непонятная строка не должна навсегда остановить всю очередь.
+            log.exception("Не удалось собрать уведомление для %s (%s), оно снято с очереди", user_id, channel_name)
+            message = None
         if message is None:
             drop()
             return 0
@@ -167,7 +196,7 @@ class Dispatcher:
                         user_id, channel_name, attempts + 1, exc)
             conn.execute(f"UPDATE outbox SET attempts = ?, next_try_at = ? WHERE id IN ({marks})",
                          (attempts + 1, iso(now + retry_delay(attempts)), *ids))
-            return 0
+            return None
         drop()
         return 1
 

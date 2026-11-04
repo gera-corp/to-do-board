@@ -80,4 +80,4 @@ class Mailer:
                 smtp.starttls(context=context)
             if self.config.user:
                 smtp.login(self.config.user, self.config.password or "")
-            smtp.send_message(msg)
+            smtp.send_message(msg, to_addrs=[to])

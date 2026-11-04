@@ -28,8 +28,9 @@ class FakeSmtp:
     def login(self, user, password):
         self.calls.append(("login", user, password))
 
-    def send_message(self, msg):
+    def send_message(self, msg, to_addrs=None):
         self.messages.append(msg)
+        self.calls.append(("to_addrs", to_addrs))
 
 
 def mailer_with(config):
@@ -150,3 +151,36 @@ def test_email_failure_does_not_resend_telegram(mail_app, mama, mail, notifier, 
     assert len(notifier.sent) == 1 and mail.sent == []
     deliver(mail_app, 30)
     assert len(notifier.sent) == 1 and len(mail.sent) == 1
+
+
+def test_only_the_given_recipient_gets_the_letter():
+    mailer, made = mailer_with(SmtpConfig(host="mail", sender="board@example.org"))
+    mailer.send("anna@example.org", "Тема", "Текст")
+    assert ("to_addrs", ["anna@example.org"]) in made[0].calls
+
+
+def test_failing_mail_channel_does_not_hold_up_others(mail_app, mama, mail, notifier, db_path):
+    attempts = []
+
+    def down(to, *args, **kwargs):
+        attempts.append(to)
+        raise OSError("mail server down")
+
+    mail.send = down
+    for name in ("petya", "vasya"):
+        make_user(mama, name)
+        link_telegram(login(mail_app, name, "pass1234"), db_path, {"petya": 200, "vasya": 300}[name])
+        confirmed_email(db_path, name, f"{name}@example.org")
+    task = make_task(mama, title="Общая")
+    for name in ("petya", "vasya"):
+        login(mail_app, name, "pass1234").post(f"/api/tasks/{task['id']}/watch")
+    deliver(mail_app)
+    notifier.sent.clear()
+    mama.post(f"/api/tasks/{task['id']}/comments", json={"text": "Привет"})
+    deliver(mail_app)
+    assert len(attempts) == 1, "после первой неудачи почта в этом проходе больше не пробуется"
+    assert sorted(chat for chat, _ in notifier.sent) == [200, 300]
+    first = attempts[0]
+    mama.post(f"/api/tasks/{task['id']}/comments", json={"text": "Ещё"})
+    deliver(mail_app, 1)
+    assert attempts.count(first) == 1, "новое событие не отменяет паузу между попытками"

@@ -183,8 +183,14 @@ class SettingsIn(BaseModel):
 
 
 class EmailIn(BaseModel):
-    # Одна «@», без пробелов и переводов строки: адрес идёт в заголовок письма.
-    email: str = Field(min_length=3, max_length=254, pattern=r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+    # Ровно один адрес: одна «@», без пробелов, переводов строки, запятых, скобок и кавычек —
+    # иначе заголовок To превратится в список получателей.
+    email: str = Field(min_length=3, max_length=254,
+                       pattern=r"^[^@\s,;:<>()\[\]\\\"']+@[^@\s,;:<>()\[\]\\\"']+\.[^@\s,;:<>()\[\]\\\"']+$")
+
+
+class EmailConfirmIn(BaseModel):
+    token: str = Field(min_length=1, max_length=200)
 
 
 class NotificationsIn(BaseModel):
@@ -917,14 +923,12 @@ def create_app(db_path: Optional[str] = None, notifier=None, directory=None,
                                  (user["id"], iso(now - window))).fetchone()[0]
             if count >= limit:
                 raise HTTPException(429, "Слишком много писем подтверждения. Попробуйте позже.")
+        # Пока идёт разговор с почтовым сервером, база не должна быть заблокирована на запись.
+        conn.commit()
         address = data.email
         token = new_token()
-        conn.execute(
-            "UPDATE users SET email_pending = ?, email_token_hash = ?, email_token_expires = ? WHERE id = ?",
-            (address, token_hash(token), iso(now + timedelta(hours=24)), user["id"]),
-        )
-        conn.execute("INSERT INTO email_confirm_log (user_id, sent_at) VALUES (?, ?)", (user["id"], iso(now)))
-        link = f"{public_url or str(request.base_url).rstrip('/')}/api/email/confirm?token={token}"
+        # Ссылка ведёт на страницу, а подтверждает кнопка: почтовые сканеры открывают ссылки сами.
+        link = f"{public_url or str(request.base_url).rstrip('/')}/#confirm-email={token}"
         lang = user["ui_lang"]
         title = get_setting(conn, "site_title") or tr("Доска задач", lang)
         try:
@@ -935,20 +939,25 @@ def create_app(db_path: Optional[str] = None, notifier=None, directory=None,
         except Exception as exc:  # почтовый сервер недоступен или отказал
             log.warning("Письмо подтверждения не отправлено: %s", exc)
             raise HTTPException(502, "Не удалось отправить письмо. Попробуйте позже.")
+        conn.execute(
+            "UPDATE users SET email_pending = ?, email_token_hash = ?, email_token_expires = ? WHERE id = ?",
+            (address, token_hash(token), iso(now + timedelta(hours=24)), user["id"]),
+        )
+        conn.execute("INSERT INTO email_confirm_log (user_id, sent_at) VALUES (?, ?)", (user["id"], iso(now)))
         return {"email_pending": address}
 
-    @app.get("/api/email/confirm", include_in_schema=False)
-    def confirm_email(token: str = "", conn: sqlite3.Connection = Conn):
+    @app.post("/api/email/confirm")
+    def confirm_email(data: EmailConfirmIn, conn: sqlite3.Connection = Conn):
         # Вход не нужен: ссылку из письма часто открывают на другом устройстве.
-        row = conn.execute("SELECT * FROM users WHERE email_token_hash = ?", (token_hash(token),)).fetchone()
-        if not token or row is None or row["email_token_expires"] < iso(clock()):
-            return RedirectResponse("/?email=invalid", status_code=303)
+        row = conn.execute("SELECT * FROM users WHERE email_token_hash = ?", (token_hash(data.token),)).fetchone()
+        if row is None or row["email_token_expires"] < iso(clock()):
+            raise HTTPException(400, "Ссылка подтверждения устарела или уже использована.")
         conn.execute(
             """UPDATE users SET email = email_pending, email_pending = NULL, email_token_hash = NULL,
                                 email_token_expires = NULL, email_notify = 1 WHERE id = ?""",
             (row["id"],),
         )
-        return RedirectResponse("/?email=confirmed", status_code=303)
+        return {"email": row["email_pending"]}
 
     @app.delete("/api/me/email", status_code=204)
     def delete_email(ctx: Ctx = Depends(get_ctx)):

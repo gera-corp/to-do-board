@@ -227,3 +227,30 @@ def test_two_actors_in_one_group_are_named(app, admin, people, watched, notifier
     deliver(app, 120)
     [text] = to_mama(notifier)
     assert "Petya" in text and "Vasya" in text
+
+
+# ---------- устойчивость очереди ----------
+
+def test_bad_row_does_not_block_queue(app, admin, people, notifier, db_path):
+    _, petya = people["petya"]
+    conn = db.connect(db_path)
+    conn.execute("""INSERT INTO outbox (user_id, channel, task_id, task_title, actor_name, kind, payload, created_at, due_at)
+                    VALUES (?, 'telegram', 999, 'x', 'y', 'field', '{"field": "priority", "old": "weird", "new": "odd"}',
+                            '2026-11-04 09:00:00', '2026-11-04 09:00:00')""", (petya["id"],))
+    conn.commit()
+    conn.close()
+    make_task(admin, assignee_id=petya["id"])
+    deliver(app)
+    assert chats(notifier) == [200]
+    assert db.connect(db_path).execute("SELECT COUNT(*) FROM outbox").fetchone()[0] == 0
+
+
+def test_long_telegram_message_is_cut_to_the_limit(app, admin, people, notifier):
+    (p, petya) = people["petya"]
+    task = make_task(admin, assignee_id=petya["id"])
+    deliver(app)
+    notifier.sent.clear()
+    for i in range(3):
+        p.post(f"/api/tasks/{task['id']}/comments", json={"text": f"{i}" * 2000})
+    deliver(app)
+    assert notifier.sent and all(len(text) <= 4096 for _, text in notifier.sent)

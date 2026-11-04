@@ -170,6 +170,9 @@ async function showAuth() {
   const f = $("#auth-form");
   $("#password-fields").hidden = !withPassword;
   $("#google-login").hidden = !withGoogle;
+  $("#google-login").onclick = () => {
+    try { if (location.hash) sessionStorage.setItem("afterLogin", location.hash); } catch {}
+  };
   $("#auth-or").hidden = !(withGoogle && withPassword);
   $("#auth-name-field").hidden = !setupMode;
   f.display_name.required = setupMode;
@@ -279,6 +282,7 @@ function renderAll() {
 }
 
 async function start() {
+  await confirmEmailFromHash();
   try {
     state.me = await api("GET", "/api/me");
   } catch {
@@ -295,20 +299,29 @@ async function start() {
   applySiteTitle(state.config.site_title);
   renderVersion();
   await loadAll();
-  showEmailResult();
+  // Вход через Google уводит со страницы, и ссылка на задачу теряется — возвращаем её.
+  let saved = null;
+  try {
+    saved = sessionStorage.getItem("afterLogin");
+    sessionStorage.removeItem("afterLogin");
+  } catch {}
+  if (saved && !location.hash) history.replaceState(null, "", location.pathname + saved);
   await openFromHash();
 }
 
-const EMAIL_RESULTS = {
-  confirmed: "Адрес почты подтверждён.",
-  invalid: "Ссылка подтверждения устарела или уже использована.",
-};
-
-function showEmailResult() {
-  const result = new URLSearchParams(location.search).get("email");
-  if (!result) return;
-  if (EMAIL_RESULTS[result]) toast(t(EMAIL_RESULTS[result]));
-  history.replaceState(null, "", "/" + location.hash);
+// Ссылка из письма подтверждения. Подтверждает кнопка, а не сама ссылка: почтовые
+// сканеры открывают ссылки без участия человека. Вход для этого не нужен.
+async function confirmEmailFromHash() {
+  const token = (location.hash.match(/^#confirm-email=([\w-]+)$/) || [])[1];
+  if (!token) return;
+  history.replaceState(null, "", location.pathname + location.search);
+  if (!confirm(t("Подтвердить этот адрес почты для уведомлений доски?"))) return;
+  try {
+    const { email } = await api("POST", "/api/email/confirm", { token });
+    toast(t("Адрес почты {email} подтверждён.", { email }));
+  } catch (err) {
+    toast(err.message);
+  }
 }
 
 // Ссылки из писем и Telegram: #task=ID открывает задачу, #profile — профиль.
