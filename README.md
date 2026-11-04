@@ -2,7 +2,7 @@
 
 English | [Русский](README.ru.md)
 
-A self-hosted kanban for a team, a family or any small group. Create several boards, give each its own columns for your process, and assign tasks to people, who show up as coloured magnets.
+A self-hosted kanban for a team, a family or any small group. Create several boards, give each its own columns for your process, and assign tasks to people, who show up as coloured magnets. Watch the tasks you care about and hear about every change in Telegram or by email.
 
 ## Getting started
 
@@ -69,7 +69,7 @@ cp .env.example .env
 - **Several boards.** An administrator creates boards, and everyone switches between them in the header. Tasks, categories and the leaderboard belong to a board.
 - **Your own columns.** Add, rename, reorder and delete columns per board under Settings. Each column has a role that sets its behaviour: new tasks and repeats land in Start, In progress is for work under way, Review notifies the author, Done closes the task and awards points. A board always keeps at least one Start and one Done column; deleting a column with tasks asks where to move them. Cards are dragged between and within columns, and the order is kept.
 - **Settings for administrators:** the app name, boards, columns, and points on or off per board.
-- **People.** Sign-in with a username and password, or with Google. An administrator adds and removes people and grants administrator rights. Everyone can change their own name, colour and password.
+- **People.** Sign-in with a username and password, or with Google. An administrator adds and removes people and grants administrator rights. Everyone can change their own name, colour and password, and set up their own notifications: Telegram and an email address only they can see.
 - **Tasks** with an assignee, due date, priority ("can wait", "normal", "urgent"), category and description.
 - **Recurring chores** (daily, weekly or monthly). When one reaches Done, the next one appears in To Do with the due date moved forward.
 - **Due dates on cards.** Tasks due today are highlighted in yellow, overdue ones in red.
@@ -82,7 +82,7 @@ cp .env.example .env
 - **Points and leaderboard** (optional, per board). Each task is worth 1 to 8 points, which go to the assignee when it reaches Done. The leaderboard covers the week, the month and all time.
 - **Stats** under People: open tasks and tasks done this week per person.
 - **A tidy Done column.** Tasks finished more than 14 days ago hide behind "Show older".
-- **English and Russian.** The interface is English by default. Until someone picks a language in their profile (Theme → Language), the board follows the browser: a Russian browser gets the Russian board. The choice is saved in the profile and follows the person across devices. Errors, Telegram notifications and the morning digest come in the same language.
+- **English and Russian.** The interface is English by default. Until someone picks a language in their profile (Theme → Language), the board follows the browser: a Russian browser gets the Russian board. The choice is saved in the profile and follows the person across devices. Errors, notifications in Telegram and by email, and the morning digest come in the same language.
 - **Seven themes**, from the system light/dark theme to high contrast, saved in the profile.
 - **Installable app (PWA).** Add the board to the home screen: on Android with the Install button or the browser menu, on iPhone with Share → Add to Home Screen. It opens without the address bar and with its own icon. Offline, it shows the last loaded board read-only; signing out wipes the saved data from the device. New versions arrive on their own and reload the page, but never in the middle of editing a task.
 - **Auto refresh.** The board refreshes every 30 seconds and when you return to the tab, so changes by others show up without reloading.
@@ -255,7 +255,7 @@ All endpoints except sign-in, first-time setup and health require the session co
 | POST | `/api/tasks/{id}/comments` | add a comment |
 | DELETE | `/api/events/{id}` | delete a comment (its author or an administrator) |
 | GET | `/api/leaderboard?period=week\|month\|all&board_id=` | points leaderboard |
-| GET | `/api/config` | whether Telegram is on, and the app name |
+| GET | `/api/config` | whether Telegram and email are on, and the app name |
 | POST/DELETE | `/api/me/telegram` | get a link to connect Telegram, or disconnect it |
 | GET | `/api/categories` | list of categories |
 | GET | `/api/stats` | per-person stats |
